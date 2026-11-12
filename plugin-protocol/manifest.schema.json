@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:android-plugin-agent:manifest:1",
+  "title": "Android Static Web Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "id",
+    "name",
+    "version",
+    "hostApi",
+    "entry",
+    "capabilities",
+    "dataModel",
+    "files"
+  ],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "version": { "$ref": "#/$defs/stableVersion" },
+    "hostApi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "$ref": "#/$defs/stableVersion" },
+        "max": { "$ref": "#/$defs/stableVersion" }
+      }
+    },
+    "entry": {
+      "type": "string",
+      "maxLength": 240,
+      "pattern": "^(?:[a-z0-9][a-z0-9._-]*/)*[a-z0-9][a-z0-9._-]*\\.html$"
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["data.read", "data.write", "ui.toast"] }
+    },
+    "dataModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "collections"],
+      "properties": {
+        "version": { "$ref": "#/$defs/stableVersion" },
+        "collections": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/collection" }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 127,
+      "items": { "$ref": "#/$defs/file" }
+    }
+  },
+  "$defs": {
+    "stableVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "resourcePath": {
+      "type": "string",
+      "maxLength": 240,
+      "pattern": "^[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/resourcePath" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "fields"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/field" }
+        }
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "required"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+        "type": { "enum": ["string", "integer", "number", "boolean"] },
+        "required": { "type": "boolean" },
+        "maxLength": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "default": { "type": ["string", "number", "boolean"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "string" } }, "required": ["type"] },
+          "then": { "not": { "anyOf": [{ "required": ["minimum"] }, { "required": ["maximum"] }] } }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["integer", "number"] } }, "required": ["type"] },
+          "then": { "not": { "required": ["maxLength"] } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "boolean" } }, "required": ["type"] },
+          "then": { "not": { "anyOf": [{ "required": ["maxLength"] }, { "required": ["minimum"] }, { "required": ["maximum"] }] } }
+        }
+      ]
+    }
+  }
+}
