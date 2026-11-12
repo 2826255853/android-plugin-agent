@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Android WebView 环境验证</title>
+  <style>
+    :root { color-scheme: light; font: 16px system-ui, sans-serif; }
+    body { max-width: 42rem; margin: 0 auto; padding: 2rem 1.25rem; color: #17212b; background: #f3f6f8; }
+    main { padding: 1.5rem; background: white; border: 1px solid #ccd6dd; border-radius: 8px; }
+    h1 { margin-top: 0; font-size: 1.5rem; }
+    .ok { color: #146c43; font-weight: 700; }
+    dt { margin-top: 1rem; color: #53616d; }
+    dd { margin: .25rem 0 0; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Android WebView 测试页</h1>
+    <p id="status" class="ok">APK 内置资源加载成功</p>
+    <dl>
+      <dt>WebView 版本</dt><dd id="webview"></dd>
+      <dt>设备 API 级别</dt><dd id="api"></dd>
+      <dt>页面来源</dt><dd id="source"></dd>
+      <dt>页面加载次数</dt><dd id="loads"></dd>
+    </dl>
+    <button id="error-test" type="button">测试错误页</button>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    document.querySelector('#webview').textContent = params.get('webview') || 'unknown';
+    document.querySelector('#api').textContent = params.get('api') || 'unknown';
+    document.querySelector('#source').textContent = location.href;
+    const storageKey = 'plugin-host-test-loads';
+    const loads = Number.parseInt(localStorage.getItem(storageKey) || '0', 10) + 1;
+    localStorage.setItem(storageKey, String(loads));
+    document.querySelector('#loads').textContent = String(loads);
+    document.querySelector('#error-test').addEventListener('click', () => {
+      location.href = '/assets/test/missing.html';
+    });
+  </script>
+</body>
+</html>
