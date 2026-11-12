@@ -4,6 +4,10 @@
 
 ## 2026-11-12
 
+- **变更：**在 `AGENTS.md` 增加 GitHub 推送规则，直连失败时使用本机 `127.0.0.1:7897` HTTP 代理，并通过命令级配置避免影响全局 Git 设置。
+- **原因/影响：**为 GitHub 连接受限时提供明确的推送回退方式。
+- **验证：**`git diff --check`；本次仅修改文档，未运行 Android 构建。
+
 - **变更：**更新 Android 宿主原型，使用 `WebViewAssetLoader` 加载 APK 内置资源，关闭 WebView file/content 访问并限制页面来源；增加明确的资源错误页，以及用于复核加载和重启状态的测试页计数与错误触发入口。忽略 Kotlin 构建缓存目录，并同步更新阶段 0.1/0.2 状态和验证记录。
 - **原因/影响：**补齐宿主资源加载、导航边界和错误呈现的可验证实现；记录环境基线，并准确标注模拟器 ADB 未授权导致的设备验收缺口。
 - **验证：**在 `android-app/` 使用 Temurin 17.0.21+9、Gradle Wrapper 8.9 执行 `:app:assembleDebug --no-daemon`，`BUILD SUCCESSFUL`；尝试安装/启动时模拟器返回 `unauthorized`，因此未完成页面、重启和错误交互验证，详情见 `android-app/验证记录.md`。
