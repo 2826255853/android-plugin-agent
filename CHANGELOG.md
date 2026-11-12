@@ -4,6 +4,10 @@
 
 ## 2026-11-13
 
+- **变更：**完成阶段 0.5 电脑端实验：新增仅依赖 Python 标准库的 `scripts/desktop_experiment.py`，实现任务工作区边界检查、确定性静态 ZIP 构建、loopback 预览检查和稳定失败记录；新增 `电脑端实验.md`、实验产物与 Python 缓存忽略规则，并同步阶段计划和项目说明。
+- **原因/影响：**为隔离工作区、可重复样例包、电脑端预览及构建失败处理提供可复现证据；实验不提前实现 AI 生成服务、动态 Android 导入、正式插件隔离或自动送达。
+- **验证：**`python scripts/desktop_experiment.py all` 通过；合法包清单、资源散列和预览资源 HTTP 200 检查通过，工作区越界/缺少清单/截断 ZIP 分别返回 `WORKSPACE_ESCAPE`、`MISSING_MANIFEST`、`INVALID_ZIP`；连续两次构建 SHA-256 均为 `d9c5804252fbd3e7f89cdf8f26924ed53594b45d19201e62c53e5394efb6d679`；`python -m py_compile scripts/desktop_experiment.py`、`git diff --check` 通过；在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug` 退出 0，`BUILD SUCCESSFUL`，35 个任务均为最新状态。
+
 - **变更：**完成阶段 0.4 固定内置页面的最小桥接：新增 `MinimalBridge.kt`、Browser/Android Adapter 与实验资源、原生 ui.toast 授权/撤销和执行计数；收紧 WebView 资源白名单与 CSP，按真实来源/主框架/精确入口/身份/版本/能力/授权/参数校验请求，并限制 JSON 大小、嵌套及重复字段。新增无 npm 依赖的 `scripts/verify-bridge.mjs` 与 `桥接实验.md`，同步计划、项目说明、协议草案和 Android 验证记录；保留此前未提交的构建补验记录。
 - **原因/影响：**为受限请求往返和越权拒绝提供可重复证据，明确浏览器只模拟、Android 实际执行；实验限于宿主固定 ui.toast 身份，不提前实现或宣称动态导入、插件数据接口、多插件隔离与生成服务。
 - **验证：**在 `android-app/` 单独执行 `.\gradlew.bat :app:assembleDebug` 退出 0，模拟器覆盖安装成功；浏览器与 Android 37/WebView 145 的验证脚本均退出 0，覆盖默认拒绝、原生授权往返、撤销、伪造身份/版本、未声明能力、非法/超大/重复 JSON、同源及 opaque-origin iframe、无副作用计数、错误页返回和重启保持/授权清空；适配器不可用、超时与并发关联用显式假传输测试。`lintDebug` 分析完成但因原有 `targetSdk = 28` 的 `ExpiredTargetSdkVersion` 退出 1（1 error、4 项原有 warnings），本次新增的监听器清理特性检查警告已修复；首次工具下载停滞后用命令级代理重试，最终离线复查，详情和 APK 摘要见验证记录。`git diff --check` 通过；真机、最低 API 23、旧 WebView 和动态插件能力未验证。

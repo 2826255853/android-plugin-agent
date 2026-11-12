@@ -1,0 +1,55 @@
+{
+  "stage": "0.5",
+  "status": "passed",
+  "build": {
+    "valid": true,
+    "manifestId": "org.example.quick-notes",
+    "version": "1.0.0",
+    "entry": "index.html",
+    "files": [
+      "app.css",
+      "app.js",
+      "index.html"
+    ],
+    "sha256": "d9c5804252fbd3e7f89cdf8f26924ed53594b45d19201e62c53e5394efb6d679",
+    "sizeBytes": 1252,
+    "workspace": "desktop-experiment/workspace/quick-notes",
+    "artifact": "desktop-experiment/artifacts/quick-notes-v1.zip",
+    "copiedFiles": [
+      "app.css",
+      "app.js",
+      "index.html"
+    ]
+  },
+  "preview": {
+    "preview": "passed",
+    "origin": "http://127.0.0.1:<ephemeral-port>",
+    "entry": "/index.html",
+    "fetchedAssets": [
+      "app.css",
+      "app.js"
+    ],
+    "simulatedHostCapabilities": [],
+    "deviceValidationRequired": true
+  },
+  "failures": [
+    {
+      "scenario": "workspace escape",
+      "result": "rejected",
+      "code": "WORKSPACE_ESCAPE",
+      "message": "path leaves the task workspace"
+    },
+    {
+      "scenario": "missing manifest",
+      "result": "rejected",
+      "code": "MISSING_MANIFEST",
+      "message": "package does not contain manifest.json"
+    },
+    {
+      "scenario": "truncated package",
+      "result": "rejected",
+      "code": "INVALID_ZIP",
+      "message": "package is not a readable ZIP archive"
+    }
+  ]
+}
