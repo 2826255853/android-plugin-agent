@@ -4,6 +4,10 @@
 
 ## 2026-11-13
 
+- **变更：**完成阶段 0.6 阶段门评审，新增 `阶段0评审.md`，汇总 0.1–0.5 证据、采用方案、安全/兼容/交付/成本风险、负责角色、复审与关闭标准、未决项及阶段 1.1–1.5 的准入和验收任务；同步 `计划文档.md`、`项目介绍.md`、两份实验说明和 `android-app/验证记录.md`。
+- **原因/影响：**明确有条件进入阶段 1 的受限宿主开发，并保留真机/最低版本、动态隔离、完整包校验、来源信任及费用控制的阻塞点；澄清电脑端路径检查、HTTP 资源预览与正式沙箱/交互/导入验收的边界，避免把实验通过误当作交付资格。本次仅修改项目文档。
+- **验证：**`python scripts/desktop_experiment.py all`、`node scripts/verify-bridge.mjs browser` 均退出 0，静态包 SHA-256 与既有记录一致；只读核对合法 ZIP 的 CRC、资源散列、文件清单、ID/版本正则及 4 个损坏夹具特征通过（不等于完整 Schema 或 Android 导入验证）；在 `android-app/` 使用会话级 JDK 17/SDK 配置执行 `.\gradlew.bat :app:assembleDebug` 退出 0，35 个任务均为最新状态；Markdown 本地链接检查及 `git diff --check` 通过。`adb devices -l` 为空，未重新安装或运行 Android 回归；本次未重跑 Lint，保留既有 targetSdk 错误和兼容性缺口。
+
 - **变更：**完成阶段 0.5 电脑端实验：新增仅依赖 Python 标准库的 `scripts/desktop_experiment.py`，实现任务工作区边界检查、确定性静态 ZIP 构建、loopback 预览检查和稳定失败记录；新增 `电脑端实验.md`、实验产物与 Python 缓存忽略规则，并同步阶段计划和项目说明。
 - **原因/影响：**为隔离工作区、可重复样例包、电脑端预览及构建失败处理提供可复现证据；实验不提前实现 AI 生成服务、动态 Android 导入、正式插件隔离或自动送达。
 - **验证：**`python scripts/desktop_experiment.py all` 通过；合法包清单、资源散列和预览资源 HTTP 200 检查通过，工作区越界/缺少清单/截断 ZIP 分别返回 `WORKSPACE_ESCAPE`、`MISSING_MANIFEST`、`INVALID_ZIP`；连续两次构建 SHA-256 均为 `d9c5804252fbd3e7f89cdf8f26924ed53594b45d19201e62c53e5394efb6d679`；`python -m py_compile scripts/desktop_experiment.py`、`git diff --check` 通过；在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug` 退出 0，`BUILD SUCCESSFUL`，35 个任务均为最新状态。
