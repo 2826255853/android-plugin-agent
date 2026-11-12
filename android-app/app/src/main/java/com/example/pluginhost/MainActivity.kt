@@ -8,14 +8,34 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import android.webkit.WebSettings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 class MainActivity : ComponentActivity() {
+    private var toastGranted by mutableStateOf(false)
+    private var toastCount by mutableIntStateOf(0)
+    private var bridgeSupported by mutableStateOf(true)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -28,32 +48,70 @@ class MainActivity : ComponentActivity() {
         val assetLoader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
+        val bridge = MinimalBridge(
+            isToastGranted = { toastGranted },
+            showToast = { text ->
+                Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+                toastCount += 1
+            },
+        )
+        WebView.setWebContentsDebuggingEnabled(
+            applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
+        )
 
         setContent {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { context ->
-                    WebView(context).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.allowFileAccess = false
-                        settings.allowContentAccess = false
-                        settings.setSupportMultipleWindows(false)
-                        settings.mediaPlaybackRequiresUserGesture = true
-
-                        webViewClient = HostWebViewClient(assetLoader)
-
-                        val url = Uri.Builder()
-                            .scheme("https")
-                            .authority("appassets.androidplatform.net")
-                            .path("/assets/test/index.html")
-                            .appendQueryParameter("webview", webViewVersion)
-                            .appendQueryParameter("api", deviceApi.toString())
-                            .build()
-                        loadUrl(url.toString())
+            MaterialTheme {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Text("桥接实验：org.example.bridge-demo / ui.toast", modifier = Modifier.padding(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { toastGranted = !toastGranted },
+                            enabled = bridgeSupported,
+                        ) {
+                            Text(if (toastGranted) "撤销提示授权" else "授权提示")
+                        }
+                        Text("已显示提示：$toastCount", modifier = Modifier.padding(8.dp))
                     }
-                },
-            )
+                    Text(
+                        if (bridgeSupported) "默认拒绝；授权仅在本次 Activity 有效" else "当前 WebView 不支持安全桥接，已关闭能力",
+                        modifier = Modifier.padding(8.dp),
+                    )
+                    AndroidView(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        factory = { context ->
+                            WebView(context).apply {
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.allowFileAccess = false
+                                settings.allowContentAccess = false
+                                settings.setSupportMultipleWindows(false)
+                                settings.mediaPlaybackRequiresUserGesture = true
+                                settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                                settings.javaScriptCanOpenWindowsAutomatically = false
+
+                                webViewClient = HostWebViewClient(assetLoader)
+                                bridgeSupported = bridge.attach(this)
+
+                                val url = Uri.Builder()
+                                    .scheme("https")
+                                    .authority("appassets.androidplatform.net")
+                                    .path("/assets/test/index.html")
+                                    .appendQueryParameter("webview", webViewVersion)
+                                    .appendQueryParameter("api", deviceApi.toString())
+                                    .build()
+                                loadUrl(url.toString())
+                            }
+                        },
+                        onRelease = { view ->
+                            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+                                WebViewCompat.removeWebMessageListener(view, MinimalBridge.OBJECT_NAME)
+                            }
+                            view.stopLoading()
+                            view.destroy()
+                        },
+                    )
+                }
+            }
         }
     }
 
@@ -72,6 +130,9 @@ class MainActivity : ComponentActivity() {
             intercept(Uri.parse(url))
 
         private fun intercept(uri: Uri): WebResourceResponse? {
+            if (!isAppAssetUrl(uri)) {
+                return WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), "Blocked".byteInputStream())
+            }
             val response = assetLoader.shouldInterceptRequest(uri)
             if (uri.host == ASSET_HOST && (!uri.path.orEmpty().startsWith(ASSET_PATH) || response == null)) {
                 return WebResourceResponse(
@@ -81,6 +142,14 @@ class MainActivity : ComponentActivity() {
                     "Not Found",
                     emptyMap(),
                     "Requested app resource was not found".byteInputStream(),
+                )
+            }
+            if (response != null) {
+                val scriptPolicy = if (uri.path.orEmpty().startsWith("/assets/test/bridge/")) "'self'" else "'self' 'unsafe-inline'"
+                response.responseHeaders = mapOf(
+                    "Content-Security-Policy" to "default-src 'none'; script-src $scriptPolicy; style-src $scriptPolicy; frame-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+                    "X-Content-Type-Options" to "nosniff",
+                    "Cache-Control" to "no-store",
                 )
             }
             return response
@@ -100,7 +169,8 @@ class MainActivity : ComponentActivity() {
         }
 
         private fun isAppAssetUrl(uri: Uri) =
-            uri.scheme == "https" && uri.host == ASSET_HOST && uri.path.orEmpty().startsWith(ASSET_PATH)
+            uri.scheme == "https" && uri.host == ASSET_HOST && uri.port in setOf(-1, 443) &&
+                uri.userInfo == null && uri.encodedPath in ALLOWED_RESOURCES
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             errorPageShown = false
@@ -147,6 +217,12 @@ class MainActivity : ComponentActivity() {
         companion object {
             private const val ASSET_HOST = "appassets.androidplatform.net"
             private const val ASSET_PATH = "/assets/"
+            private val ALLOWED_RESOURCES = setOf(
+                "/assets/test/index.html", "/assets/test/missing.html",
+                MinimalBridge.ENTRY_PATH, "/assets/test/bridge/adapters.js",
+                "/assets/test/bridge/experiment.js", "/assets/test/bridge/app.css",
+                "/assets/test/bridge/frame.html", "/assets/test/bridge/frame.js",
+            )
 
             private const val ERROR_PAGE_TEMPLATE = """
                 <!doctype html>

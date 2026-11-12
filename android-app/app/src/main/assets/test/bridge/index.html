@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>阶段 0.4 最小桥接实验</title>
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="experiment.js"></script>
+</head>
+<body>
+  <main>
+    <h1>最小桥接实验</h1>
+    <p id="environment">正在识别运行环境…</p>
+    <p>实验插件：org.example.bridge-demo；仅声明 ui.toast。测试文字为虚构样例。</p>
+    <p id="simulated-toast" role="status"></p>
+    <button id="simulate-grant" type="button" hidden>切换模拟授权</button>
+    <button id="toast" type="button">请求显示提示</button>
+    <button id="undeclared" type="button">测试未声明能力</button>
+    <button id="invalid" type="button">测试非法参数</button>
+    <pre id="result" role="status">等待请求</pre>
+    <p>Android：通过页面上方原生按钮授权或撤销。浏览器：仅演示模拟状态，不代表设备能力验收。</p>
+    <a href="../index.html">返回环境测试页</a>
+  </main>
+</body>
+</html>
