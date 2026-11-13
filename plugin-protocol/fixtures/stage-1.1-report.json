@@ -1,0 +1,181 @@
+{
+  "status": "passed",
+  "fixedFixtures": 17,
+  "boundaryFixtures": 12,
+  "results": [
+    {
+      "name": "invalid-unknown-field.zip",
+      "expected": "MANIFEST_INVALID",
+      "actual": "MANIFEST_INVALID",
+      "sizeBytes": 1263
+    },
+    {
+      "name": "invalid-manifest-version.zip",
+      "expected": "MANIFEST_VERSION_UNSUPPORTED",
+      "actual": "MANIFEST_VERSION_UNSUPPORTED",
+      "sizeBytes": 1253
+    },
+    {
+      "name": "invalid-host-api-range.zip",
+      "expected": "MANIFEST_INVALID",
+      "actual": "MANIFEST_INVALID",
+      "sizeBytes": 1257
+    },
+    {
+      "name": "invalid-duplicate-field-id.zip",
+      "expected": "MANIFEST_INVALID",
+      "actual": "MANIFEST_INVALID",
+      "sizeBytes": 1258
+    },
+    {
+      "name": "invalid-default-type.zip",
+      "expected": "MANIFEST_INVALID",
+      "actual": "MANIFEST_INVALID",
+      "sizeBytes": 1262
+    },
+    {
+      "name": "invalid-unknown-capability.zip",
+      "expected": "CAPABILITY_UNKNOWN",
+      "actual": "CAPABILITY_UNKNOWN",
+      "sizeBytes": 1264
+    },
+    {
+      "name": "invalid-entry-not-declared.zip",
+      "expected": "RESOURCE_MISSING",
+      "actual": "RESOURCE_MISSING",
+      "sizeBytes": 1257
+    },
+    {
+      "name": "invalid-hash-mismatch.zip",
+      "expected": "RESOURCE_HASH_MISMATCH",
+      "actual": "RESOURCE_HASH_MISMATCH",
+      "sizeBytes": 1214
+    },
+    {
+      "name": "invalid-duplicate-file-declaration.zip",
+      "expected": "MANIFEST_INVALID",
+      "actual": "MANIFEST_INVALID",
+      "sizeBytes": 1258
+    },
+    {
+      "name": "invalid-missing-manifest.zip",
+      "expected": "MANIFEST_MISSING",
+      "actual": "MANIFEST_MISSING",
+      "sizeBytes": 352
+    },
+    {
+      "name": "invalid-path-traversal.zip",
+      "expected": "PACKAGE_ENTRY_INVALID",
+      "actual": "PACKAGE_ENTRY_INVALID",
+      "sizeBytes": 1429
+    },
+    {
+      "name": "invalid-duplicate-entry.zip",
+      "expected": "PACKAGE_DUPLICATE_ENTRY",
+      "actual": "PACKAGE_DUPLICATE_ENTRY",
+      "sizeBytes": 1582
+    },
+    {
+      "name": "invalid-truncated.zip",
+      "expected": "PACKAGE_CORRUPT",
+      "actual": "PACKAGE_CORRUPT",
+      "sizeBytes": 1230
+    },
+    {
+      "name": "invalid-duplicate-json-key.zip",
+      "expected": "MANIFEST_INVALID",
+      "actual": "MANIFEST_INVALID",
+      "sizeBytes": 1252
+    },
+    {
+      "name": "invalid-missing-resource.zip",
+      "expected": "RESOURCE_MISSING",
+      "actual": "RESOURCE_MISSING",
+      "sizeBytes": 1081
+    },
+    {
+      "name": "invalid-undeclared-resource.zip",
+      "expected": "RESOURCE_UNDECLARED",
+      "actual": "RESOURCE_UNDECLARED",
+      "sizeBytes": 1352
+    },
+    {
+      "name": "invalid-external-resource.zip",
+      "expected": "RESOURCE_REFERENCE_INVALID",
+      "actual": "RESOURCE_REFERENCE_INVALID",
+      "sizeBytes": 1271
+    },
+    {
+      "name": "limit-single-file-at.zip",
+      "expected": "ACCEPTED",
+      "actual": "ACCEPTED",
+      "sizeBytes": 2097700
+    },
+    {
+      "name": "limit-single-file-over.zip",
+      "expected": "PACKAGE_LIMIT_EXCEEDED",
+      "actual": "PACKAGE_LIMIT_EXCEEDED",
+      "sizeBytes": 2097701
+    },
+    {
+      "name": "limit-entry-count-at.zip",
+      "expected": "ACCEPTED",
+      "actual": "ACCEPTED",
+      "sizeBytes": 25257
+    },
+    {
+      "name": "limit-entry-count-over.zip",
+      "expected": "PACKAGE_LIMIT_EXCEEDED",
+      "actual": "PACKAGE_LIMIT_EXCEEDED",
+      "sizeBytes": 25453
+    },
+    {
+      "name": "limit-manifest-at.zip",
+      "expected": "ACCEPTED",
+      "actual": "ACCEPTED",
+      "sizeBytes": 262377
+    },
+    {
+      "name": "limit-manifest-over.zip",
+      "expected": "PACKAGE_LIMIT_EXCEEDED",
+      "actual": "PACKAGE_LIMIT_EXCEEDED",
+      "sizeBytes": 262378
+    },
+    {
+      "name": "limit-total-at.zip",
+      "expected": "ACCEPTED",
+      "actual": "ACCEPTED",
+      "sizeBytes": 360288
+    },
+    {
+      "name": "limit-total-over.zip",
+      "expected": "PACKAGE_LIMIT_EXCEEDED",
+      "actual": "PACKAGE_LIMIT_EXCEEDED",
+      "sizeBytes": 360290
+    },
+    {
+      "name": "limit-ratio-at.zip",
+      "expected": "ACCEPTED",
+      "actual": "ACCEPTED",
+      "sizeBytes": 11179
+    },
+    {
+      "name": "limit-ratio-over.zip",
+      "expected": "PACKAGE_LIMIT_EXCEEDED",
+      "actual": "PACKAGE_LIMIT_EXCEEDED",
+      "sizeBytes": 11176
+    },
+    {
+      "name": "limit-zip-at.zip",
+      "expected": "ACCEPTED",
+      "actual": "ACCEPTED",
+      "sizeBytes": 10485760
+    },
+    {
+      "name": "limit-zip-over.zip",
+      "expected": "PACKAGE_LIMIT_EXCEEDED",
+      "actual": "PACKAGE_LIMIT_EXCEEDED",
+      "sizeBytes": 10485761
+    }
+  ]
+}

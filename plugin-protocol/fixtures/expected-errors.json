@@ -1,0 +1,19 @@
+{
+  "invalid-unknown-field.zip": "MANIFEST_INVALID",
+  "invalid-manifest-version.zip": "MANIFEST_VERSION_UNSUPPORTED",
+  "invalid-host-api-range.zip": "MANIFEST_INVALID",
+  "invalid-duplicate-field-id.zip": "MANIFEST_INVALID",
+  "invalid-default-type.zip": "MANIFEST_INVALID",
+  "invalid-unknown-capability.zip": "CAPABILITY_UNKNOWN",
+  "invalid-entry-not-declared.zip": "RESOURCE_MISSING",
+  "invalid-hash-mismatch.zip": "RESOURCE_HASH_MISMATCH",
+  "invalid-duplicate-file-declaration.zip": "MANIFEST_INVALID",
+  "invalid-missing-manifest.zip": "MANIFEST_MISSING",
+  "invalid-path-traversal.zip": "PACKAGE_ENTRY_INVALID",
+  "invalid-duplicate-entry.zip": "PACKAGE_DUPLICATE_ENTRY",
+  "invalid-truncated.zip": "PACKAGE_CORRUPT",
+  "invalid-duplicate-json-key.zip": "MANIFEST_INVALID",
+  "invalid-missing-resource.zip": "RESOURCE_MISSING",
+  "invalid-undeclared-resource.zip": "RESOURCE_UNDECLARED",
+  "invalid-external-resource.zip": "RESOURCE_REFERENCE_INVALID"
+}

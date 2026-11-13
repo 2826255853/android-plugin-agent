@@ -47,7 +47,7 @@
     "capabilities": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "enum": ["data.read", "data.write", "ui.toast"] }
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 }
     },
     "dataModel": {
       "type": "object",
@@ -127,6 +127,22 @@
         {
           "if": { "properties": { "type": { "const": "boolean" } }, "required": ["type"] },
           "then": { "not": { "anyOf": [{ "required": ["maxLength"] }, { "required": ["minimum"] }, { "required": ["maximum"] }] } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "string" } }, "required": ["type"] },
+          "then": { "properties": { "default": { "type": "string" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "integer" } }, "required": ["type"] },
+          "then": { "properties": { "default": { "type": "integer" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "number" } }, "required": ["type"] },
+          "then": { "properties": { "default": { "type": "number" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "boolean" } }, "required": ["type"] },
+          "then": { "properties": { "default": { "type": "boolean" } } }
         }
       ]
     }

@@ -4,6 +4,16 @@
 
 ## 2026-11-13
 
+- **变更：**新增 `plugin-protocol/fixtures/verify_fixtures.py` 阶段 1.1 契约验收器，统一执行 17 个固定负例、2 个合法包及 12 个临时上下限 ZIP 夹具；生成 `stage-1.1-report.json`，并同步协议、计划和阶段评审中的完成状态。
+- **原因/影响：**将已冻结的清单、跨字段、资源闭合、错误码和 ZIP 限额矩阵转为可重复的运行证据；大体积边界包只在临时目录生成，避免把构建产物提交到仓库。Android 导入、原子安装和设备验收仍由阶段 1.2/1.5 负责。
+- **验证：**`python plugin-protocol/fixtures/build_fixtures.py` 与 `python plugin-protocol/fixtures/verify_fixtures.py --report plugin-protocol/fixtures/stage-1.1-report.json` 通过，固定夹具 19 个、边界夹具 12 个全部符合预期；`python -m py_compile plugin-protocol/fixtures/build_fixtures.py plugin-protocol/fixtures/verify_fixtures.py`、`git diff --check` 及在 `android-app/` 执行的 `.\gradlew.bat :app:assembleDebug` 均通过（35 个任务为最新）。
+
+- **变更：**冻结阶段 1.1 插件导入契约，补充严格 JSON、跨字段校验、错误码及阶段 0.5 实验码映射、未实现能力拒绝规则、版本升级/数据兼容策略；扩展 Schema 默认值类型校验；扩展夹具生成器，新增错误码索引和负例，合计 19 个 ZIP 夹具；同步阶段 0 评审与计划状态。
+- **原因/影响：**关闭清单/跨字段规则、错误码映射和未实现能力处理的阶段 0 未决决策，为阶段 1.2 导入器提供明确基线。数据迁移、真实 Android 导入器、特殊 ZIP/全部限额边界执行、设备验收和其他阶段门未决项仍未完成。
+- **验证：**夹具生成器语法检查通过；19 个 ZIP 均按预期检查（截断负例除外），17 个负例均有错误码索引，两个有效包资源摘要正确，重建字节一致；`python scripts/desktop_experiment.py all`、`node scripts/verify-bridge.mjs browser` 均通过；在 `android-app/` 执行 `:app:assembleDebug` 成功（35 项最新）；Schema 与错误码索引 JSON 解析及 `git diff --check` 通过。环境未安装 Draft 2020-12 Schema 校验器，未执行 Schema 元校验；尚无 Android 导入器可运行负例矩阵，当前无连接设备。
+
+## 2026-11-13
+
 - **变更：**完成阶段 0.6 阶段门评审，新增 `阶段0评审.md`，汇总 0.1–0.5 证据、采用方案、安全/兼容/交付/成本风险、负责角色、复审与关闭标准、未决项及阶段 1.1–1.5 的准入和验收任务；同步 `计划文档.md`、`项目介绍.md`、两份实验说明和 `android-app/验证记录.md`。
 - **原因/影响：**明确有条件进入阶段 1 的受限宿主开发，并保留真机/最低版本、动态隔离、完整包校验、来源信任及费用控制的阻塞点；澄清电脑端路径检查、HTTP 资源预览与正式沙箱/交互/导入验收的边界，避免把实验通过误当作交付资格。本次仅修改项目文档。
 - **验证：**`python scripts/desktop_experiment.py all`、`node scripts/verify-bridge.mjs browser` 均退出 0，静态包 SHA-256 与既有记录一致；只读核对合法 ZIP 的 CRC、资源散列、文件清单、ID/版本正则及 4 个损坏夹具特征通过（不等于完整 Schema 或 Android 导入验证）；在 `android-app/` 使用会话级 JDK 17/SDK 配置执行 `.\gradlew.bat :app:assembleDebug` 退出 0，35 个任务均为最新状态；Markdown 本地链接检查及 `git diff --check` 通过。`adb devices -l` 为空，未重新安装或运行 Android 回归；本次未重跑 Lint，保留既有 targetSdk 错误和兼容性缺口。
