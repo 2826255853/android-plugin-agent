@@ -2,6 +2,12 @@
 
 记录仓库中源代码、配置、依赖、资源、构建脚本和项目文档的每次变更。按时间倒序追加；每条记录说明改动、目的或影响，以及验证结果。详细规则见根目录 `AGENTS.md`。
 
+## 2026-11-14
+
+- **变更：**完成阶段 1.4 插件数据接口：新增清单绑定的 `InstalledPluginBridge`、按插件 ID/集合分区的应用私有 `PluginDataStore`、Quick Notes 数据读写界面和临时验收包/Android 模拟器验收脚本；WebKit 依赖升至 1.13.0 以支持特性检测及按来源清理；更新 `插件协议草案.md`、`计划文档.md`、`项目介绍.md`、`阶段0评审.md` 和 `android-app/验证记录.md`。
+- **原因/影响：**提供严格来源/身份/声明/参数校验、默认拒绝且分项授权的会话级读写、持久隔离数据和明确卸载数据生命周期；默认保留数据，用户确认删除时才清理，避免静默丢失。数据配额、未实现迁移/升级回滚和设备覆盖边界已记录。
+- **验证：**在 `android-app/` 执行 `:app:assembleDebug` 成功；Android 37 / WebView 145 模拟器运行 `node scripts/verify-plugin-data.mjs` 全部通过，覆盖授权、拒绝、重启、隔离及卸载保留/删除；`node scripts/verify-bridge.mjs browser` 与 `node scripts/verify-bridge.mjs android`、`python plugin-protocol/fixtures/verify_fixtures.py`（17 固定、12 边界夹具）、Node/Python 脚本语法检查和 `git diff --check` 通过。`:app:lintDebug --offline` 分析后退出 1，仍为既有 `targetSdk = 28` 的 1 项错误和 4 项警告；未逐项实测数据配额数值边界，未进行真机测试。
+
 ## 2026-11-13
 
 - **变更：**完成阶段 1.3 离线插件加载：`LocalPluginStore` 仅恢复清单和 SHA-256 校验均有效的安装记录，并支持确认移除；`MainActivity` 为每个插件建立独立 HTTPS 虚拟来源和受限 `WebViewAssetLoader`，只加载清单资源，限制外部导航、网络及 file/content 访问，提供可恢复错误页与插件运行/移除界面；新增 `scripts/build_stage13_fixtures.py` 用于生成临时双插件隔离验收包；同步阶段评审、计划、项目说明、验证记录，并更新桥接回归脚本使用错误页恢复链接。

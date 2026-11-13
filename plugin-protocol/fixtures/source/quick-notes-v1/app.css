@@ -1,0 +1,10 @@
+* { box-sizing: border-box; }
+body { margin: 0; padding: 1rem; color: #17212b; background: #f3f6fa; font: 16px system-ui, sans-serif; }
+main { max-width: 42rem; margin: 0 auto; padding: 1.25rem; background: white; border: 1px solid #d7dee8; border-radius: 12px; }
+h1, h2 { margin-top: 0; }
+form { display: grid; gap: .6rem; margin: 1.5rem 0; }
+input, textarea, button { font: inherit; padding: .7rem; border: 1px solid #8998aa; border-radius: 6px; }
+button { color: white; background: #1759a8; border: 0; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }
+li { margin: .8rem 0; padding: .75rem; background: #f3f6fa; border-radius: 6px; overflow-wrap: anywhere; }
+li p { white-space: pre-wrap; }

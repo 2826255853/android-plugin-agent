@@ -10,6 +10,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebSettings
 import android.webkit.MimeTypeMap
+import android.webkit.WebStorage
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,8 +24,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
@@ -35,21 +38,31 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalContext
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import androidx.webkit.WebStorageCompat
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
 import java.security.MessageDigest
+import java.util.WeakHashMap
 
 class MainActivity : ComponentActivity() {
     private var toastGranted by mutableStateOf(false)
     private var toastCount by mutableIntStateOf(0)
     private var bridgeSupported by mutableStateOf(true)
+    private var grantedPluginCapabilities by mutableStateOf<Set<String>>(emptySet())
+    private var pluginAccessSession = PluginAccessSession()
     private val pluginStore by lazy { LocalPluginStore(this) }
+    private val pluginDataStore by lazy { PluginDataStore(this) }
+    private val pluginBridges = WeakHashMap<WebView, InstalledPluginBridge>()
     private val io = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,6 +74,8 @@ class MainActivity : ComponentActivity() {
             "not exposed on API < 26"
         }
         val deviceApi = android.os.Build.VERSION.SDK_INT
+        bridgeSupported = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+        val webStorageClearSupported = WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)
         val assetLoader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
@@ -83,7 +98,19 @@ class MainActivity : ComponentActivity() {
                 var candidate by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var activePlugin by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var removeTarget by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
-                BackHandler(enabled = activePlugin != null) { activePlugin = null }
+                var deletePluginData by remember { mutableStateOf(false) }
+                val closePlugin = {
+                    pluginAccessSession.revokeAll()
+                    grantedPluginCapabilities = emptySet()
+                    activePlugin = null
+                }
+                val openPlugin: (LocalPluginStore.Installed) -> Unit = { plugin ->
+                    pluginAccessSession.revokeAll()
+                    pluginAccessSession = PluginAccessSession()
+                    grantedPluginCapabilities = emptySet()
+                    activePlugin = plugin
+                }
+                BackHandler(enabled = activePlugin != null) { closePlugin() }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     if (uri != null) {
                         packageStatus = "正在校验插件包…"
@@ -128,13 +155,52 @@ class MainActivity : ComponentActivity() {
                 if (active != null) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxWidth()) {
-                            Button(onClick = { activePlugin = null }) { Text("返回插件列表") }
+                            Button(onClick = { closePlugin() }) { Text("返回插件列表") }
                             Text("${active.name}  ${active.version}", modifier = Modifier.padding(12.dp))
                         }
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            if ("data.read" in active.capabilities) {
+                                val granted = "data.read" in grantedPluginCapabilities
+                                Button(
+                                    enabled = bridgeSupported,
+                                    onClick = {
+                                        pluginAccessSession.setGranted("data.read", !granted)
+                                        grantedPluginCapabilities = if (granted) {
+                                            grantedPluginCapabilities - "data.read"
+                                        } else {
+                                            grantedPluginCapabilities + "data.read"
+                                        }
+                                    },
+                                ) { Text(if (granted) "撤销读取授权" else "授权读取") }
+                            }
+                            if ("data.write" in active.capabilities) {
+                                val granted = "data.write" in grantedPluginCapabilities
+                                Button(
+                                    enabled = bridgeSupported,
+                                    onClick = {
+                                        pluginAccessSession.setGranted("data.write", !granted)
+                                        grantedPluginCapabilities = if (granted) {
+                                            grantedPluginCapabilities - "data.write"
+                                        } else {
+                                            grantedPluginCapabilities + "data.write"
+                                        }
+                                    },
+                                ) { Text(if (granted) "撤销写入授权" else "授权写入") }
+                            }
+                        }
+                        Text(
+                            if (bridgeSupported) "仅授予清单已声明的能力；授权只在本次打开期间有效。返回列表会撤销全部授权。"
+                            else "当前 WebView 不支持安全桥接，插件数据能力已关闭。",
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
                         AndroidView(
                             modifier = Modifier.fillMaxSize(),
                             factory = { viewContext -> createPluginWebView(viewContext, active) },
-                            onRelease = { view -> view.stopLoading(); view.destroy() },
+                            onRelease = { view ->
+                                pluginBridges.remove(view)?.detach(view)
+                                view.stopLoading()
+                                view.destroy()
+                            },
                         )
                     }
                 } else {
@@ -156,8 +222,8 @@ class MainActivity : ComponentActivity() {
                                         Text("${plugin.name}  ${plugin.version}")
                                         Text(plugin.id)
                                     }
-                                    Button(onClick = { activePlugin = plugin }) { Text("打开") }
-                                    Button(onClick = { removeTarget = plugin }) { Text("移除") }
+                                    Button(onClick = { openPlugin(plugin) }) { Text("打开") }
+                                    Button(onClick = { deletePluginData = false; removeTarget = plugin }) { Text("移除") }
                                 }
                             }
                         }
@@ -228,17 +294,48 @@ class MainActivity : ComponentActivity() {
                     AlertDialog(
                         onDismissRequest = { removeTarget = null },
                         title = { Text("移除插件？") },
-                        text = { Text("将移除 ${plugin.name}（${plugin.id}）的安装资源。该插件的来源存储会保留，数据删除与迁移规则将在阶段 1.4 明确。") },
+                        text = {
+                            Column {
+                                Text("将移除 ${plugin.name}（${plugin.id}）的安装资源。宿主笔记数据和页面来源存储默认保留，可在以后重新安装同一 ID 的插件时继续使用。")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().toggleable(
+                                        value = deletePluginData,
+                                        enabled = webStorageClearSupported,
+                                        role = Role.Checkbox,
+                                        onValueChange = { deletePluginData = it },
+                                    ),
+                                ) {
+                                    Checkbox(
+                                        checked = deletePluginData,
+                                        enabled = webStorageClearSupported,
+                                        onCheckedChange = null,
+                                    )
+                                    Text("同时永久删除此插件的宿主数据和页面来源存储", modifier = Modifier.padding(top = 12.dp))
+                                }
+                                if (!webStorageClearSupported) Text("当前 WebView 不支持按来源清理页面数据，删除选项不可用。")
+                                if (deletePluginData) Text("此操作不可恢复；只有在安装资源移除成功后才会删除数据。")
+                            }
+                        },
                         confirmButton = {
                             Button(onClick = {
                                 removeTarget = null
                                 packageStatus = "正在移除 ${plugin.name}…"
+                                val deleteData = deletePluginData
                                 io.execute {
                                     val removed = pluginStore.remove(plugin.id)
+                                    val dataDeleted = removed && deleteData && runCatching {
+                                        deletePluginOriginStorage(plugin.id).also { originDeleted ->
+                                            if (originDeleted) pluginDataStore.deletePluginData(plugin.id)
+                                        }
+                                    }.getOrDefault(false)
                                     runOnUiThread {
                                         if (removed) {
                                             installed.removeAll { it.id == plugin.id }
-                                            packageStatus = "已移除：${plugin.name}"
+                                            packageStatus = when {
+                                                !deleteData -> "已移除安装资源，插件数据已保留：${plugin.name}"
+                                                dataDeleted -> "已移除安装资源并永久删除插件数据：${plugin.name}"
+                                                else -> "安装资源已移除，但页面来源数据清理未完成；宿主数据仍保留，可重新安装后重试。"
+                                            }
                                         } else {
                                             packageStatus = "移除失败，插件仍保留。"
                                         }
@@ -246,7 +343,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }) { Text("移除安装资源") }
                         },
-                        dismissButton = { Button(onClick = { removeTarget = null }) { Text("取消") } },
+                        dismissButton = { Button(onClick = { removeTarget = null; deletePluginData = false }) { Text("取消") } },
                     )
                 }
             }
@@ -254,8 +351,26 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        pluginDataStore.close()
         io.shutdownNow()
         super.onDestroy()
+    }
+
+    private fun deletePluginOriginStorage(pluginId: String): Boolean {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) return false
+        val completed = CountDownLatch(1)
+        val succeeded = AtomicBoolean(false)
+        runOnUiThread {
+            runCatching {
+                WebStorageCompat.deleteBrowsingDataForSite(
+                    WebStorage.getInstance(), pluginOrigin(pluginId), Runnable {
+                        succeeded.set(true)
+                        completed.countDown()
+                    },
+                )
+            }.onFailure { completed.countDown() }
+        }
+        return runCatching { completed.await(30, TimeUnit.SECONDS) && succeeded.get() }.getOrDefault(false)
     }
 
     private fun importError(code: String) = when (code) {
@@ -280,9 +395,12 @@ class MainActivity : ComponentActivity() {
     private fun createPluginWebView(
         context: android.content.Context,
         plugin: LocalPluginStore.Installed,
-    ) = WebView(context).apply {
+    ): WebView = WebView(context).apply {
         configurePluginWebSettings()
         webViewClient = PluginWebViewClient(plugin)
+        val bridge = InstalledPluginBridge(plugin, pluginDataStore, pluginAccessSession)
+        pluginBridges[this] = bridge
+        bridgeSupported = bridge.attach(this)
         val entry = plugin.entry.split('/').joinToString("/") { Uri.encode(it) }
         loadUrl("${pluginOrigin(plugin.id)}/plugin/$entry")
     }

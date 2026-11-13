@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Quick Notes</title>
+    <link rel="stylesheet" href="app.css">
+  </head>
+  <body>
+    <main>
+      <h1>Quick Notes</h1>
+      <p id="status" role="status">正在检查宿主数据接口…</p>
+      <form id="note-form">
+        <label for="title">标题</label>
+        <input id="title" maxlength="120" required>
+        <label for="body">正文</label>
+        <textarea id="body" maxlength="5000" rows="5"></textarea>
+        <button type="submit">保存笔记</button>
+      </form>
+      <section>
+        <h2>已保存笔记</h2>
+        <button id="refresh" type="button">刷新笔记</button>
+        <ul id="notes"></ul>
+        <button id="load-more" type="button" hidden>加载更多</button>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

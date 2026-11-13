@@ -28,6 +28,8 @@ internal class LocalPluginStore(context: Context) {
         val directory: File,
         val entry: String,
         val resources: List<String>,
+        val capabilities: Set<String>,
+        val dataModel: JSONObject,
     )
     class ImportFailure(val code: String) : Exception(code)
 
@@ -66,7 +68,10 @@ internal class LocalPluginStore(context: Context) {
                 if (!compatibleModel(previous, parsed.model)) fail("DATA_MODEL_INCOMPATIBLE")
             }
             // Validation only. The caller must obtain explicit update confirmation before install().
-            return Installed(parsed.id, parsed.name, parsed.version, incoming, parsed.entry, parsed.resources).also {
+            return Installed(
+                parsed.id, parsed.name, parsed.version, incoming, parsed.entry, parsed.resources,
+                parsed.capabilities, parsed.model,
+            ).also {
                 incoming.deleteOnExit()
                 pending[incoming.name] = parsed
             }
@@ -105,7 +110,9 @@ internal class LocalPluginStore(context: Context) {
                 if (backup.exists()) backup.renameTo(File(root, pkg.id))
                 fail("PACKAGE_CORRUPT")
             }
-            val records = list().filterNot { it.id == pkg.id } + Installed(pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources)
+            val records = list().filterNot { it.id == pkg.id } + Installed(
+                pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources, pkg.capabilities, pkg.model,
+            )
             val json = JSONArray().apply {
                 records.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("version", it.version)) }
             }
@@ -116,7 +123,7 @@ internal class LocalPluginStore(context: Context) {
             }
             backup.deleteRecursively()
             candidate.directory.delete()
-            return Installed(pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources)
+            return Installed(pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources, pkg.capabilities, pkg.model)
         } catch (e: ImportFailure) {
             stage.deleteRecursively()
             if (backup.exists() && !target.exists()) backup.renameTo(target)
@@ -160,6 +167,11 @@ internal class LocalPluginStore(context: Context) {
         require(isPluginId(id) && directory.name == id)
         val entry = manifest.getString("entry")
         require(validPath(entry) && entry.endsWith(".html"))
+        val capsArray = manifest.getJSONArray("capabilities")
+        val capabilities = (0 until capsArray.length()).map { capsArray.getString(it) }.toSet()
+        require(capabilities.size == capsArray.length() && capabilities.all { it in KNOWN_CAPABILITIES })
+        val dataModel = manifest.getJSONObject("dataModel")
+        require(dataModel.optJSONArray("collections") != null)
         val declared = linkedMapOf<String, String>()
         val files = manifest.getJSONArray("files")
         for (index in 0 until files.length()) {
@@ -185,12 +197,15 @@ internal class LocalPluginStore(context: Context) {
             }
             require(digest.digest().joinToString("") { "%02x".format(it) } == expectedHash)
         }
-        Installed(id, manifest.getString("name"), manifest.getString("version"), directory, entry, declared.keys.toList())
+        Installed(
+            id, manifest.getString("name"), manifest.getString("version"), directory, entry,
+            declared.keys.toList(), capabilities, dataModel,
+        )
     }.getOrNull()
 
     private data class Package(
         val id: String, val name: String, val version: String, val model: JSONObject,
-        val entries: List<String>, val entry: String, val resources: List<String>,
+        val entries: List<String>, val entry: String, val resources: List<String>, val capabilities: Set<String>,
     )
 
     private fun validate(file: File): Package {
@@ -235,6 +250,8 @@ internal class LocalPluginStore(context: Context) {
         if (manifestVersion !is Int && manifestVersion !is Long) fail("MANIFEST_INVALID")
         if (manifest.optInt("manifestVersion", -1) != 1) fail("MANIFEST_VERSION_UNSUPPORTED")
         validateManifest(manifest)
+        val capabilitiesJson = manifest.getJSONArray("capabilities")
+        val capabilities = (0 until capabilitiesJson.length()).map { capabilitiesJson.getString(it) }.toSet()
         val files = manifest.getJSONArray("files")
         val declared = linkedMapOf<String, String>()
         for (i in 0 until files.length()) {
@@ -262,7 +279,7 @@ internal class LocalPluginStore(context: Context) {
         return Package(
             manifest.getString("id"), manifest.getString("name"), manifest.getString("version"),
             manifest.getJSONObject("dataModel"), listOf("manifest.json") + declared.keys,
-            manifest.getString("entry"), declared.keys.toList(),
+            manifest.getString("entry"), declared.keys.toList(), capabilities,
         )
     }
 
