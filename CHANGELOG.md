@@ -4,6 +4,14 @@
 
 ## 2026-11-13
 
+- **变更：**补录阶段 1.2 真机验收结果，并同步 `计划文档.md` 阶段状态。
+- **原因/影响：**在 vivo V2458A（Android 16/API 36，WebView 156.0.8078.47）验证合法包安装及列表显示、哈希篡改和路径穿越包拒绝且旧插件不变、强制停止后列表恢复；明确更新替换回滚和更广设备兼容仍未覆盖。
+- **验证：**在 `android-app/` 执行 `.\gradlew.bat :app:installDebug` 安装成功；系统文件选择器实际导入 `valid-minimal-v1.zip`、`invalid-hash-mismatch.zip`、`invalid-path-traversal.zip`，界面结果符合预期；`am force-stop` 后重新打开列表仍显示 `org.example.quick-notes 1.0.0`。本次只同步验证/计划文档，未重跑构建。
+
+- **变更：**完成阶段 1.2 本地包管理实现，新增 Android 系统 ZIP 选取、限额与中央目录安全校验、严格清单/资源引用/SHA-256 验证、应用私有暂存及原子安装/更新、数据模型兼容检查、启动中断恢复和持久化插件列表；同步更新 `计划文档.md` 与 `android-app/验证记录.md`。
+- **原因/影响：**让已冻结的静态插件包契约具备本地导入和管理入口；所有包在验证完成前不写入安装目录，更新需显式确认，失败时保留旧安装。设备端选包、安装与重启恢复尚未验证。
+- **验证：**在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug` 退出 0；仓库根目录执行 `python plugin-protocol/fixtures/verify_fixtures.py --report plugin-protocol/fixtures/stage-1.1-report.json`，17 个固定夹具和 12 个临时边界夹具全部符合预期；`adb devices -l` 无设备，未执行 Android 运行验收；`git diff --check` 通过。
+
 - **变更：**新增 `plugin-protocol/fixtures/verify_fixtures.py` 阶段 1.1 契约验收器，统一执行 17 个固定负例、2 个合法包及 12 个临时上下限 ZIP 夹具；生成 `stage-1.1-report.json`，并同步协议、计划和阶段评审中的完成状态。
 - **原因/影响：**将已冻结的清单、跨字段、资源闭合、错误码和 ZIP 限额矩阵转为可重复的运行证据；大体积边界包只在临时目录生成，避免把构建产物提交到仓库。Android 导入、原子安装和设备验收仍由阶段 1.2/1.5 负责。
 - **验证：**`python plugin-protocol/fixtures/build_fixtures.py` 与 `python plugin-protocol/fixtures/verify_fixtures.py --report plugin-protocol/fixtures/stage-1.1-report.json` 通过，固定夹具 19 个、边界夹具 12 个全部符合预期；`python -m py_compile plugin-protocol/fixtures/build_fixtures.py plugin-protocol/fixtures/verify_fixtures.py`、`git diff --check` 及在 `android-app/` 执行的 `.\gradlew.bat :app:assembleDebug` 均通过（35 个任务为最新）。

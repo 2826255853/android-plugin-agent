@@ -11,6 +11,8 @@ import android.webkit.WebView
 import android.webkit.WebSettings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
@@ -18,23 +20,31 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
     private var toastGranted by mutableStateOf(false)
     private var toastCount by mutableIntStateOf(0)
     private var bridgeSupported by mutableStateOf(true)
+    private val pluginStore by lazy { LocalPluginStore(this) }
+    private val io = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,7 +71,66 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
+                val context = LocalContext.current
+                val installed = remember { mutableStateListOf<LocalPluginStore.Installed>() }
+                var packageStatus by remember { mutableStateOf("") }
+                var candidate by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
+                val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                    if (uri != null) {
+                        packageStatus = "正在校验插件包…"
+                        io.execute {
+                            try {
+                                val checked = pluginStore.inspect(context, uri)
+                                runOnUiThread {
+                                    candidate = checked
+                                    val old = installed.firstOrNull { it.id == checked.id }
+                                    packageStatus = if (old == null) "已通过校验：${checked.name} ${checked.version}" else ""
+                                    if (old == null) {
+                                        io.execute {
+                                            try {
+                                                val result = pluginStore.install(checked)
+                                                runOnUiThread { installed.removeAll { it.id == result.id }; installed.add(result); candidate = null; packageStatus = "安装完成：${result.name} ${result.version}" }
+                                            } catch (e: LocalPluginStore.ImportFailure) {
+                                                runOnUiThread { packageStatus = importError(e.code); candidate = null }
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e: LocalPluginStore.ImportFailure) {
+                                runOnUiThread { packageStatus = importError(e.code) }
+                            }
+                        }
+                    }
+                }
+                LaunchedEffect(Unit) { installed.addAll(pluginStore.list()) }
                 Column(modifier = Modifier.fillMaxSize()) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text("本地插件", modifier = Modifier.padding(8.dp).weight(1f))
+                        Button(onClick = { picker.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text("导入 ZIP") }
+                    }
+                    installed.forEach { plugin ->
+                        Text("${plugin.name}  ${plugin.version}\n${plugin.id}", modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
+                    }
+                    if (installed.isEmpty()) Text("暂无已安装插件", modifier = Modifier.padding(horizontal = 12.dp))
+                    if (packageStatus.isNotEmpty()) Text(packageStatus, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                    candidate?.let { checked ->
+                        val old = installed.firstOrNull { it.id == checked.id }
+                        if (old != null) AlertDialog(
+                            onDismissRequest = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" },
+                            title = { Text("确认更新插件") },
+                            text = { Text("${checked.id}\n${old.version} → ${checked.version}\n数据模型兼容性检查已通过，现有插件将在切换成功后替换。") },
+                            confirmButton = { Button(onClick = {
+                                candidate = null; packageStatus = "正在安装更新…"
+                                io.execute {
+                                    try {
+                                        val result = pluginStore.install(checked)
+                                        runOnUiThread { installed.removeAll { it.id == result.id }; installed.add(result); packageStatus = "更新完成：${result.name} ${result.version}" }
+                                    } catch (e: LocalPluginStore.ImportFailure) { runOnUiThread { packageStatus = importError(e.code) } }
+                                }
+                            }) { Text("更新") } },
+                            dismissButton = { Button(onClick = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" }) { Text("取消") } },
+                        )
+                    }
                     Text("桥接实验：org.example.bridge-demo / ui.toast", modifier = Modifier.padding(8.dp))
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Button(
@@ -113,6 +182,30 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        io.shutdownNow()
+        super.onDestroy()
+    }
+
+    private fun importError(code: String) = when (code) {
+        "PACKAGE_CORRUPT" -> "插件包损坏或格式不支持。"
+        "PACKAGE_LIMIT_EXCEEDED" -> "插件包超过大小或解压限制。"
+        "PACKAGE_ENTRY_INVALID" -> "插件包包含不允许的路径或文件类型。"
+        "PACKAGE_DUPLICATE_ENTRY" -> "插件包包含重复文件。"
+        "MANIFEST_MISSING" -> "插件包缺少根目录 manifest.json。"
+        "MANIFEST_INVALID" -> "插件清单无效。"
+        "MANIFEST_VERSION_UNSUPPORTED" -> "插件清单版本暂不支持。"
+        "INCOMPATIBLE_HOST_API" -> "插件要求的宿主接口版本不兼容。"
+        "CAPABILITY_UNKNOWN" -> "插件声明了未知能力。"
+        "RESOURCE_MISSING" -> "插件缺少清单声明的资源。"
+        "RESOURCE_UNDECLARED" -> "插件包含未声明的资源。"
+        "RESOURCE_HASH_MISMATCH" -> "插件资源摘要校验失败。"
+        "RESOURCE_REFERENCE_INVALID" -> "插件页面引用了缺失或外部资源。"
+        "PLUGIN_VERSION_NOT_NEWER" -> "已安装相同或更新版本，未覆盖现有插件。"
+        "DATA_MODEL_INCOMPATIBLE" -> "新版本的数据模型不兼容，现有插件保持不变。"
+        else -> "插件导入失败（$code）。"
     }
 
     @Suppress("DEPRECATION")
