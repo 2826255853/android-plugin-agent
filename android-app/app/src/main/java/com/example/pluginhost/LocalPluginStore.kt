@@ -21,18 +21,20 @@ internal class LocalPluginStore(context: Context) {
 
     init { recoverInterruptedInstall() }
 
-    data class Installed(val id: String, val name: String, val version: String, val directory: File)
+    data class Installed(
+        val id: String,
+        val name: String,
+        val version: String,
+        val directory: File,
+        val entry: String,
+        val resources: List<String>,
+    )
     class ImportFailure(val code: String) : Exception(code)
 
     @Synchronized
     fun list(): List<Installed> {
         val records = root.listFiles().orEmpty().filter { it.isDirectory && isPluginId(it.name) }
-            .mapNotNull { directory ->
-                runCatching {
-                    val manifest = JSONObject(File(directory, "manifest.json").readText())
-                    Installed(directory.name, manifest.getString("name"), manifest.getString("version"), directory)
-                }.getOrNull()
-            }.sortedBy { it.id }
+            .mapNotNull(::readInstalled).sortedBy { it.id }
         val json = JSONArray().apply {
             records.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("version", it.version)) }
         }
@@ -64,7 +66,7 @@ internal class LocalPluginStore(context: Context) {
                 if (!compatibleModel(previous, parsed.model)) fail("DATA_MODEL_INCOMPATIBLE")
             }
             // Validation only. The caller must obtain explicit update confirmation before install().
-            return Installed(parsed.id, parsed.name, parsed.version, incoming).also {
+            return Installed(parsed.id, parsed.name, parsed.version, incoming, parsed.entry, parsed.resources).also {
                 incoming.deleteOnExit()
                 pending[incoming.name] = parsed
             }
@@ -103,7 +105,7 @@ internal class LocalPluginStore(context: Context) {
                 if (backup.exists()) backup.renameTo(File(root, pkg.id))
                 fail("PACKAGE_CORRUPT")
             }
-            val records = list().filterNot { it.id == pkg.id } + Installed(pkg.id, pkg.name, pkg.version, target)
+            val records = list().filterNot { it.id == pkg.id } + Installed(pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources)
             val json = JSONArray().apply {
                 records.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("version", it.version)) }
             }
@@ -114,7 +116,7 @@ internal class LocalPluginStore(context: Context) {
             }
             backup.deleteRecursively()
             candidate.directory.delete()
-            return Installed(pkg.id, pkg.name, pkg.version, target)
+            return Installed(pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources)
         } catch (e: ImportFailure) {
             stage.deleteRecursively()
             if (backup.exists() && !target.exists()) backup.renameTo(target)
@@ -134,9 +136,61 @@ internal class LocalPluginStore(context: Context) {
         candidate.directory.delete()
     }
 
+    @Synchronized
+    fun remove(id: String): Boolean {
+        if (!isPluginId(id)) return false
+        val installed = list().firstOrNull { it.id == id } ?: return false
+        val removed = File(root, ".removed-$id-${System.nanoTime()}")
+        if (!installed.directory.renameTo(removed)) return false
+        val remaining = list().filterNot { it.id == id }
+        val json = JSONArray().apply {
+            remaining.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("version", it.version)) }
+        }
+        if (!prefs.edit().putString("items", json.toString()).commit()) {
+            removed.renameTo(installed.directory)
+            return false
+        }
+        removed.deleteRecursively()
+        return true
+    }
+
+    private fun readInstalled(directory: File): Installed? = runCatching {
+        val manifest = JSONObject(File(directory, "manifest.json").readText())
+        val id = manifest.getString("id")
+        require(isPluginId(id) && directory.name == id)
+        val entry = manifest.getString("entry")
+        require(validPath(entry) && entry.endsWith(".html"))
+        val declared = linkedMapOf<String, String>()
+        val files = manifest.getJSONArray("files")
+        for (index in 0 until files.length()) {
+            val item = files.getJSONObject(index)
+            val path = item.getString("path")
+            val hash = item.getString("sha256")
+            require(validPath(path) && path != "manifest.json" && Regex("[a-f0-9]{64}").matches(hash))
+            require(declared.put(path, hash) == null)
+        }
+        require(entry in declared && declared.isNotEmpty())
+        val rootPath = directory.canonicalFile.path + File.separator
+        for ((path, expectedHash) in declared) {
+            val resource = File(directory, path).canonicalFile
+            require(resource.path.startsWith(rootPath) && resource.isFile)
+            val digest = MessageDigest.getInstance("SHA-256")
+            resource.inputStream().use { input ->
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            require(digest.digest().joinToString("") { "%02x".format(it) } == expectedHash)
+        }
+        Installed(id, manifest.getString("name"), manifest.getString("version"), directory, entry, declared.keys.toList())
+    }.getOrNull()
+
     private data class Package(
         val id: String, val name: String, val version: String, val model: JSONObject,
-        val entries: List<String>,
+        val entries: List<String>, val entry: String, val resources: List<String>,
     )
 
     private fun validate(file: File): Package {
@@ -205,7 +259,11 @@ internal class LocalPluginStore(context: Context) {
             }
             validateReferences(zip, declared.keys)
         }
-        return Package(manifest.getString("id"), manifest.getString("name"), manifest.getString("version"), manifest.getJSONObject("dataModel"), listOf("manifest.json") + declared.keys)
+        return Package(
+            manifest.getString("id"), manifest.getString("name"), manifest.getString("version"),
+            manifest.getJSONObject("dataModel"), listOf("manifest.json") + declared.keys,
+            manifest.getString("entry"), declared.keys.toList(),
+        )
     }
 
     private fun validateManifest(m: JSONObject) {
@@ -315,6 +373,7 @@ internal class LocalPluginStore(context: Context) {
                     if (isPluginId(id) && !target.exists()) file.renameTo(target) else file.deleteRecursively()
                 }
                 file.name.startsWith(".stage-") || file.name.startsWith("incoming-") -> file.deleteRecursively()
+                file.name.startsWith(".removed-") -> file.deleteRecursively()
             }
         }
     }

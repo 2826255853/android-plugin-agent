@@ -9,16 +9,20 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebSettings
+import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +42,8 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.util.concurrent.Executors
+import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : ComponentActivity() {
     private var toastGranted by mutableStateOf(false)
@@ -75,21 +81,30 @@ class MainActivity : ComponentActivity() {
                 val installed = remember { mutableStateListOf<LocalPluginStore.Installed>() }
                 var packageStatus by remember { mutableStateOf("") }
                 var candidate by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
+                var activePlugin by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
+                var removeTarget by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
+                BackHandler(enabled = activePlugin != null) { activePlugin = null }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     if (uri != null) {
                         packageStatus = "正在校验插件包…"
                         io.execute {
                             try {
                                 val checked = pluginStore.inspect(context, uri)
+                                val previous = pluginStore.list().firstOrNull { it.id == checked.id }
                                 runOnUiThread {
                                     candidate = checked
-                                    val old = installed.firstOrNull { it.id == checked.id }
+                                    val old = previous ?: installed.firstOrNull { it.id == checked.id }
                                     packageStatus = if (old == null) "已通过校验：${checked.name} ${checked.version}" else ""
                                     if (old == null) {
                                         io.execute {
                                             try {
                                                 val result = pluginStore.install(checked)
-                                                runOnUiThread { installed.removeAll { it.id == result.id }; installed.add(result); candidate = null; packageStatus = "安装完成：${result.name} ${result.version}" }
+                                                runOnUiThread {
+                                                    installed.removeAll { it.id == result.id }
+                                                    installed.add(result)
+                                                    candidate = null
+                                                    packageStatus = "安装完成：${result.name} ${result.version}"
+                                                }
                                             } catch (e: LocalPluginStore.ImportFailure) {
                                                 runOnUiThread { packageStatus = importError(e.code); candidate = null }
                                             }
@@ -102,82 +117,136 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                LaunchedEffect(Unit) { installed.addAll(pluginStore.list()) }
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Text("本地插件", modifier = Modifier.padding(8.dp).weight(1f))
-                        Button(onClick = { picker.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text("导入 ZIP") }
+                LaunchedEffect(Unit) {
+                    io.execute {
+                        val records = pluginStore.list()
+                        runOnUiThread { installed.addAll(records) }
                     }
-                    installed.forEach { plugin ->
-                        Text("${plugin.name}  ${plugin.version}\n${plugin.id}", modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
-                    }
-                    if (installed.isEmpty()) Text("暂无已安装插件", modifier = Modifier.padding(horizontal = 12.dp))
-                    if (packageStatus.isNotEmpty()) Text(packageStatus, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                    candidate?.let { checked ->
-                        val old = installed.firstOrNull { it.id == checked.id }
-                        if (old != null) AlertDialog(
-                            onDismissRequest = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" },
-                            title = { Text("确认更新插件") },
-                            text = { Text("${checked.id}\n${old.version} → ${checked.version}\n数据模型兼容性检查已通过，现有插件将在切换成功后替换。") },
-                            confirmButton = { Button(onClick = {
-                                candidate = null; packageStatus = "正在安装更新…"
-                                io.execute {
-                                    try {
-                                        val result = pluginStore.install(checked)
-                                        runOnUiThread { installed.removeAll { it.id == result.id }; installed.add(result); packageStatus = "更新完成：${result.name} ${result.version}" }
-                                    } catch (e: LocalPluginStore.ImportFailure) { runOnUiThread { packageStatus = importError(e.code) } }
-                                }
-                            }) { Text("更新") } },
-                            dismissButton = { Button(onClick = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" }) { Text("取消") } },
+                }
+
+                val active = activePlugin
+                if (active != null) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            Button(onClick = { activePlugin = null }) { Text("返回插件列表") }
+                            Text("${active.name}  ${active.version}", modifier = Modifier.padding(12.dp))
+                        }
+                        AndroidView(
+                            modifier = Modifier.fillMaxSize(),
+                            factory = { viewContext -> createPluginWebView(viewContext, active) },
+                            onRelease = { view -> view.stopLoading(); view.destroy() },
                         )
                     }
-                    Text("桥接实验：org.example.bridge-demo / ui.toast", modifier = Modifier.padding(8.dp))
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = { toastGranted = !toastGranted },
-                            enabled = bridgeSupported,
-                        ) {
-                            Text(if (toastGranted) "撤销提示授权" else "授权提示")
+                } else {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            Text("本地插件", modifier = Modifier.padding(8.dp).weight(1f))
+                        Button(onClick = {
+                            picker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                        }) { Text("导入 ZIP") }
                         }
-                        Text("已显示提示：$toastCount", modifier = Modifier.padding(8.dp))
+                        if (packageStatus.isNotEmpty()) {
+                            Text(packageStatus, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
+                        }
+                        if (installed.isEmpty()) Text("暂无已安装插件", modifier = Modifier.padding(horizontal = 12.dp))
+                        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                            items(installed, key = { it.id }) { plugin ->
+                                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("${plugin.name}  ${plugin.version}")
+                                        Text(plugin.id)
+                                    }
+                                    Button(onClick = { activePlugin = plugin }) { Text("打开") }
+                                    Button(onClick = { removeTarget = plugin }) { Text("移除") }
+                                }
+                            }
+                        }
+                        Text("桥接实验：org.example.bridge-demo / ui.toast", modifier = Modifier.padding(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            Button(onClick = { toastGranted = !toastGranted }, enabled = bridgeSupported) {
+                                Text(if (toastGranted) "撤销提示授权" else "授权提示")
+                            }
+                            Text("已显示提示：$toastCount", modifier = Modifier.padding(8.dp))
+                        }
+                        Text(
+                            if (bridgeSupported) "默认拒绝；授权仅在本次 Activity 有效" else "当前 WebView 不支持安全桥接，已关闭能力",
+                            modifier = Modifier.padding(8.dp),
+                        )
+                        AndroidView(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            factory = { viewContext ->
+                                WebView(viewContext).apply {
+                                    configurePluginWebSettings()
+                                    webViewClient = HostWebViewClient(assetLoader)
+                                    bridgeSupported = bridge.attach(this)
+                                    val url = Uri.Builder()
+                                        .scheme("https")
+                                        .authority("appassets.androidplatform.net")
+                                        .path("/assets/test/index.html")
+                                        .appendQueryParameter("webview", webViewVersion)
+                                        .appendQueryParameter("api", deviceApi.toString())
+                                        .build()
+                                    loadUrl(url.toString())
+                                }
+                            },
+                            onRelease = { view ->
+                                if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+                                    WebViewCompat.removeWebMessageListener(view, MinimalBridge.OBJECT_NAME)
+                                }
+                                view.stopLoading()
+                                view.destroy()
+                            },
+                        )
                     }
-                    Text(
-                        if (bridgeSupported) "默认拒绝；授权仅在本次 Activity 有效" else "当前 WebView 不支持安全桥接，已关闭能力",
-                        modifier = Modifier.padding(8.dp),
+                }
+
+                candidate?.let { checked ->
+                    val old = installed.firstOrNull { it.id == checked.id }
+                    if (old != null) AlertDialog(
+                        onDismissRequest = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" },
+                        title = { Text("确认更新插件") },
+                        text = { Text("${checked.id}\n${old.version} → ${checked.version}\n数据模型兼容性检查已通过，现有插件将在切换成功后替换。") },
+                        confirmButton = { Button(onClick = {
+                            candidate = null; packageStatus = "正在安装更新…"
+                            io.execute {
+                                try {
+                                    val result = pluginStore.install(checked)
+                                    runOnUiThread {
+                                        installed.removeAll { it.id == result.id }
+                                        installed.add(result)
+                                        packageStatus = "更新完成：${result.name} ${result.version}"
+                                    }
+                                } catch (e: LocalPluginStore.ImportFailure) {
+                                    runOnUiThread { packageStatus = importError(e.code) }
+                                }
+                            }
+                        }) { Text("更新") } },
+                        dismissButton = { Button(onClick = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" }) { Text("取消") } },
                     )
-                    AndroidView(
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        factory = { context ->
-                            WebView(context).apply {
-                                settings.javaScriptEnabled = true
-                                settings.domStorageEnabled = true
-                                settings.allowFileAccess = false
-                                settings.allowContentAccess = false
-                                settings.setSupportMultipleWindows(false)
-                                settings.mediaPlaybackRequiresUserGesture = true
-                                settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                                settings.javaScriptCanOpenWindowsAutomatically = false
-
-                                webViewClient = HostWebViewClient(assetLoader)
-                                bridgeSupported = bridge.attach(this)
-
-                                val url = Uri.Builder()
-                                    .scheme("https")
-                                    .authority("appassets.androidplatform.net")
-                                    .path("/assets/test/index.html")
-                                    .appendQueryParameter("webview", webViewVersion)
-                                    .appendQueryParameter("api", deviceApi.toString())
-                                    .build()
-                                loadUrl(url.toString())
-                            }
+                }
+                removeTarget?.let { plugin ->
+                    AlertDialog(
+                        onDismissRequest = { removeTarget = null },
+                        title = { Text("移除插件？") },
+                        text = { Text("将移除 ${plugin.name}（${plugin.id}）的安装资源。该插件的来源存储会保留，数据删除与迁移规则将在阶段 1.4 明确。") },
+                        confirmButton = {
+                            Button(onClick = {
+                                removeTarget = null
+                                packageStatus = "正在移除 ${plugin.name}…"
+                                io.execute {
+                                    val removed = pluginStore.remove(plugin.id)
+                                    runOnUiThread {
+                                        if (removed) {
+                                            installed.removeAll { it.id == plugin.id }
+                                            packageStatus = "已移除：${plugin.name}"
+                                        } else {
+                                            packageStatus = "移除失败，插件仍保留。"
+                                        }
+                                    }
+                                }
+                            }) { Text("移除安装资源") }
                         },
-                        onRelease = { view ->
-                            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                                WebViewCompat.removeWebMessageListener(view, MinimalBridge.OBJECT_NAME)
-                            }
-                            view.stopLoading()
-                            view.destroy()
-                        },
+                        dismissButton = { Button(onClick = { removeTarget = null }) { Text("取消") } },
                     )
                 }
             }
@@ -208,10 +277,185 @@ class MainActivity : ComponentActivity() {
         else -> "插件导入失败（$code）。"
     }
 
+    private fun createPluginWebView(
+        context: android.content.Context,
+        plugin: LocalPluginStore.Installed,
+    ) = WebView(context).apply {
+        configurePluginWebSettings()
+        webViewClient = PluginWebViewClient(plugin)
+        val entry = plugin.entry.split('/').joinToString("/") { Uri.encode(it) }
+        loadUrl("${pluginOrigin(plugin.id)}/plugin/$entry")
+    }
+
+    private fun WebView.configurePluginWebSettings() {
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.allowFileAccess = false
+        settings.allowContentAccess = false
+        settings.allowFileAccessFromFileURLs = false
+        settings.allowUniversalAccessFromFileURLs = false
+        settings.setSupportMultipleWindows(false)
+        settings.mediaPlaybackRequiresUserGesture = true
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        settings.javaScriptCanOpenWindowsAutomatically = false
+        settings.cacheMode = WebSettings.LOAD_NO_CACHE
+    }
+
+    private class PluginWebViewClient(
+        private val plugin: LocalPluginStore.Installed,
+    ) : WebViewClient() {
+        private val origin = pluginOrigin(plugin.id)
+        private val host = Uri.parse(origin).host.orEmpty()
+        private val allowedPaths = plugin.resources.toSet()
+        @Volatile private var lastGoodUrl: String? = null
+        private var pendingGoodUrl: String? = null
+        private val assetLoader = WebViewAssetLoader.Builder()
+            .setDomain(host)
+            .addPathHandler("/plugin/", WebViewAssetLoader.PathHandler(::serve))
+            .build()
+        private var errorPageShown = false
+
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse =
+            intercept(request.url)
+
+        @Suppress("DEPRECATION")
+        override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse =
+            intercept(Uri.parse(url))
+
+        private fun intercept(uri: Uri): WebResourceResponse {
+            if (!isPluginOrigin(uri)) return response(403, "Forbidden", "Blocked")
+            val path = uri.encodedPath.orEmpty().removePrefix("/plugin/")
+            if (path !in allowedPaths) return response(404, "Not Found", "Plugin resource not found")
+            return assetLoader.shouldInterceptRequest(uri) ?: response(404, "Not Found", "Plugin resource not found")
+        }
+
+        private fun serve(path: String): WebResourceResponse? {
+            if (path !in allowedPaths) return null
+            val rootPath = plugin.directory.canonicalFile.path + File.separator
+            val file = File(plugin.directory, path).canonicalFile
+            if (!file.path.startsWith(rootPath) || !file.isFile) return null
+            val extension = file.extension.lowercase()
+            val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: when (extension) {
+                "js" -> "text/javascript"
+                "html" -> "text/html"
+                "css" -> "text/css"
+                "json" -> "application/json"
+                else -> "application/octet-stream"
+            }
+            val headers = mapOf(
+                "Content-Security-Policy" to PLUGIN_CSP,
+                "X-Content-Type-Options" to "nosniff",
+                "Cache-Control" to "no-store",
+            )
+            return WebResourceResponse(mime, "UTF-8", 200, "OK", headers, file.inputStream())
+        }
+
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            if (isPluginOrigin(request.url)) return false
+            if (request.isForMainFrame) showErrorPage(view, "已拦截离开插件来源的页面跳转")
+            return true
+        }
+
+        @Suppress("DEPRECATION")
+        override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+            val uri = Uri.parse(url)
+            if (isPluginOrigin(uri)) return false
+            showErrorPage(view, "已拦截离开插件来源的页面跳转")
+            return true
+        }
+
+        private fun isPluginOrigin(uri: Uri): Boolean =
+            uri.scheme == "https" && uri.host == host && uri.port in setOf(-1, 443) && uri.userInfo == null &&
+                uri.encodedPath.orEmpty().startsWith("/plugin/")
+
+        private fun isPluginResource(uri: Uri): Boolean = isPluginOrigin(uri) &&
+            uri.encodedPath.orEmpty().removePrefix("/plugin/") in allowedPaths
+
+        private fun isPluginHtml(uri: Uri): Boolean {
+            if (!isPluginResource(uri)) return false
+            val path = uri.encodedPath.orEmpty().removePrefix("/plugin/")
+            if (!path.endsWith(".html")) return false
+            val rootPath = plugin.directory.canonicalFile.path + File.separator
+            val file = File(plugin.directory, path).canonicalFile
+            return file.path.startsWith(rootPath) && file.isFile
+        }
+
+        override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+            val uri = Uri.parse(url)
+            if (isPluginHtml(uri)) {
+                pendingGoodUrl = url
+                errorPageShown = false
+            }
+            super.onPageStarted(view, url, favicon)
+        }
+
+        override fun onPageFinished(view: WebView, url: String) {
+            if (pendingGoodUrl == url && !errorPageShown) lastGoodUrl = url
+            super.onPageFinished(view, url)
+        }
+
+        override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+            if (request.isForMainFrame) showErrorPage(view, error.description?.toString())
+            super.onReceivedError(view, request, error)
+        }
+
+        override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, error: WebResourceResponse) {
+            if (request.isForMainFrame) showErrorPage(view, "资源加载失败（HTTP ${error.statusCode}）")
+            super.onReceivedHttpError(view, request, error)
+        }
+
+        private fun showErrorPage(view: WebView, description: String?) {
+            if (errorPageShown) return
+            errorPageShown = true
+            val message = (description ?: "未知加载错误")
+                .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+            val entry = plugin.entry.split('/').joinToString("/") { Uri.encode(it) }
+            val recoveryUrl = (lastGoodUrl ?: "$origin/plugin/$entry")
+                .replace("&", "&amp;").replace("\"", "&quot;")
+            view.loadDataWithBaseURL(
+                "$origin/",
+                ERROR_PAGE_TEMPLATE.replace("{{recovery}}", recoveryUrl).replace("{{message}}", message),
+                "text/html",
+                "UTF-8",
+                null,
+            )
+        }
+
+        private fun response(status: Int, reason: String, body: String) = WebResourceResponse(
+            "text/plain", "UTF-8", status, reason,
+            mapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"),
+            body.byteInputStream(),
+        )
+
+        companion object {
+            private const val PLUGIN_CSP = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self'; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+            private const val ERROR_PAGE_TEMPLATE = """
+                <!doctype html>
+                <html lang="zh-CN"><meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <title>插件页面加载失败</title>
+                <style>body{font:16px system-ui,sans-serif;margin:0;padding:2rem;color:#17212b;background:#fff4f2}main{max-width:42rem;margin:auto;padding:1.5rem;background:white;border:1px solid #e5aaa0;border-radius:8px}h1{font-size:1.4rem;margin-top:0;color:#a6291e}code{overflow-wrap:anywhere}</style>
+                <main><h1>页面加载失败</h1><p>宿主未能加载插件资源，请检查包内容后重试。</p><p>错误信息：<code>{{message}}</code></p><a id="error-recovery" href="{{recovery}}">返回上一页</a></main>
+                </html>
+            """
+        }
+    }
+
+    private companion object {
+        fun pluginOrigin(id: String): String {
+            require(LocalPluginStore.isPluginId(id))
+            val digest = MessageDigest.getInstance("SHA-256").digest(id.toByteArray(Charsets.UTF_8))
+            val token = digest.joinToString("") { "%02x".format(it) }
+            return "https://p-$token.test"
+        }
+    }
+
     @Suppress("DEPRECATION")
     private class HostWebViewClient(
         private val assetLoader: WebViewAssetLoader,
     ) : WebViewClient() {
+        @Volatile private var lastGoodUrl: String? = null
+        private var pendingGoodUrl: String? = null
         private var errorPageShown = false
 
         override fun shouldInterceptRequest(
@@ -266,9 +510,23 @@ class MainActivity : ComponentActivity() {
                 uri.userInfo == null && uri.encodedPath in ALLOWED_RESOURCES
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-            errorPageShown = false
+            val uri = Uri.parse(url)
+            if (uri.encodedPath.orEmpty().endsWith(".html") && isAppAssetUrl(uri) && assetExists(view, uri)) {
+                pendingGoodUrl = url
+                errorPageShown = false
+            }
             super.onPageStarted(view, url, favicon)
         }
+
+        override fun onPageFinished(view: WebView, url: String) {
+            if (pendingGoodUrl == url && !errorPageShown) lastGoodUrl = url
+            super.onPageFinished(view, url)
+        }
+
+        private fun assetExists(view: WebView, uri: Uri): Boolean = runCatching {
+            view.context.assets.open(uri.encodedPath.orEmpty().removePrefix(ASSET_PATH)).use { }
+            true
+        }.getOrDefault(false)
 
         override fun onReceivedError(
             view: WebView,
@@ -298,9 +556,12 @@ class MainActivity : ComponentActivity() {
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
                 .replace("\"", "&quot;")
+            val recoveryUrl = (lastGoodUrl ?: "https://$ASSET_HOST$ASSET_PATH/test/index.html")
+                .replace("&", "&amp;")
+                .replace("\"", "&quot;")
             view.loadDataWithBaseURL(
                 "https://appassets.androidplatform.net/",
-                ERROR_PAGE_TEMPLATE.replace("{{message}}", message),
+                ERROR_PAGE_TEMPLATE.replace("{{recovery}}", recoveryUrl).replace("{{message}}", message),
                 "text/html",
                 "UTF-8",
                 null,
@@ -323,7 +584,7 @@ class MainActivity : ComponentActivity() {
                 <meta name="viewport" content="width=device-width,initial-scale=1">
                 <title>插件页面加载失败</title>
                 <style>body{font:16px system-ui,sans-serif;margin:0;padding:2rem;color:#17212b;background:#fff4f2}main{max-width:42rem;margin:auto;padding:1.5rem;background:white;border:1px solid #e5aaa0;border-radius:8px}h1{font-size:1.4rem;margin-top:0;color:#a6291e}code{overflow-wrap:anywhere}</style>
-                <main><h1>页面加载失败</h1><p>宿主未能加载插件资源，请检查包内容后重试。</p><p>错误信息：<code>{{message}}</code></p><button onclick="history.back()">返回上一页</button></main>
+                <main><h1>页面加载失败</h1><p>宿主未能加载插件资源，请检查包内容后重试。</p><p>错误信息：<code>{{message}}</code></p><a id="error-recovery" href="{{recovery}}">返回上一页</a></main>
                 </html>
             """
         }

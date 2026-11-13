@@ -4,6 +4,16 @@
 
 ## 2026-11-13
 
+- **变更：**完成阶段 1.3 离线插件加载：`LocalPluginStore` 仅恢复清单和 SHA-256 校验均有效的安装记录，并支持确认移除；`MainActivity` 为每个插件建立独立 HTTPS 虚拟来源和受限 `WebViewAssetLoader`，只加载清单资源，限制外部导航、网络及 file/content 访问，提供可恢复错误页与插件运行/移除界面；新增 `scripts/build_stage13_fixtures.py` 用于生成临时双插件隔离验收包；同步阶段评审、计划、项目说明、验证记录，并更新桥接回归脚本使用错误页恢复链接。
+- **原因/影响：**使已验证的静态包可离线运行，按来源隔离不同插件页面存储；移除确认会删除安装资源并保留该来源存储，数据删除/迁移由阶段 1.4 明确。错误页恢复不依赖 WebView 历史中可能重复的失败页面。
+- **验证：**在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug` 通过并安装到 Android 37 / WebView 145 模拟器；两个临时合法插件包验证独立 HTTPS 来源、localStorage 隔离及重启保持，外部网络/file/content 请求与跨插件导航被拒绝，缺失资源错误页可恢复，确认移除后安装目录不可访问；`python -m py_compile scripts/build_stage13_fixtures.py` 和 `python scripts/build_stage13_fixtures.py --out-dir "$env:TEMP\stage13-generated"` 通过，生成 ZIP 清单和资源 SHA-256 自检匹配；`node scripts/verify-bridge.mjs browser` 与 `ANDROID_SERIAL=emulator-5554 node scripts/verify-bridge.mjs android` 均通过，`git diff --check` 通过。`.\gradlew.bat :app:lintDebug --offline` 分析完成但退出 1，保留既有 `targetSdk = 28` 的 1 项错误和 5 项警告；未进行真机测试。
+
+- **变更：**在 `AGENTS.md` 的验证规范中补充 Android 测试顺序要求：先在虚拟机上测试，完成后如需真机测试须先告知开发者。
+- **原因/影响：**统一开发验证流程，确保真机测试安排可被开发者及时知悉。
+- **验证：**人工检查 Markdown 文档内容；未运行 Android 构建，因本次仅修改项目规范和变更记录。
+
+## 2026-11-13
+
 - **变更：**补录阶段 1.2 真机验收结果，并同步 `计划文档.md` 阶段状态。
 - **原因/影响：**在 vivo V2458A（Android 16/API 36，WebView 156.0.8078.47）验证合法包安装及列表显示、哈希篡改和路径穿越包拒绝且旧插件不变、强制停止后列表恢复；明确更新替换回滚和更广设备兼容仍未覆盖。
 - **验证：**在 `android-app/` 执行 `.\gradlew.bat :app:installDebug` 安装成功；系统文件选择器实际导入 `valid-minimal-v1.zip`、`invalid-hash-mismatch.zip`、`invalid-path-traversal.zip`，界面结果符合预期；`am force-stop` 后重新打开列表仍显示 `org.example.quick-notes 1.0.0`。本次只同步验证/计划文档，未重跑构建。

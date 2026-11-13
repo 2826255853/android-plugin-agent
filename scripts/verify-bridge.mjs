@@ -228,7 +228,7 @@ try {
     code(wrongPage, 'SOURCE_NOT_ALLOWED');
     await cdp.send('Page.navigate', { url: origin + '/assets/test/missing.html' });
     await until(async () => (await cdp.evaluate('document.body.textContent')).includes('页面加载失败'), 'host error page');
-    await cdp.evaluate('history.back()');
+    await cdp.evaluate("document.querySelector('#error-recovery').click()");
     await until(async () => await cdp.evaluate("document.querySelector('#loads') !== null"), 'return from error page');
     pass('wrong main page rejected and missing-resource error preserved');
     await toggleNativeGrant('授权提示');
