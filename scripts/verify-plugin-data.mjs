@@ -13,9 +13,10 @@ const id = `org.example.stage14.run${randomBytes(4).toString('hex')}`;
 const secondId = `org.example.stage14.copy${randomBytes(4).toString('hex')}`;
 const dir = await mkdtemp(join(tmpdir(), 'stage14-acceptance-'));
 const zipName = `${id.split('.').at(-1)}.zip`;
-const zipPath = join(dir, zipName);
 const secondZipName = `${secondId.split('.').at(-1)}.zip`;
-const secondZipPath = join(dir, secondZipName);
+const updateZipName = 'quick-notes-update.zip';
+const downgradeZipName = 'quick-notes-downgrade.zip';
+const incompatibleZipName = 'quick-notes-incompatible.zip';
 const adb = (...args) => execFileSync(adbPath, ['-s', serial, ...args], { encoding: 'utf8', windowsHide: true });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label, timeoutMs = 30000) {
@@ -170,12 +171,13 @@ async function connectWebView(pluginId = id) {
   })()`);
 }
 
-async function importPackage(packageName = zipName, pluginId = id) {
+async function importPackage(packageName = zipName, pluginId = id, confirmUpdate = false) {
   await tapText('导入 ZIP');
   if (!uiNodes().some(item => item.text === packageName)) {
     await openDownloadsInPicker();
   }
   await tapText(packageName, `select ${packageName}`);
+  if (confirmUpdate) await tapText('更新', `confirm update ${packageName}`);
   await ensurePluginVisible(pluginId);
 }
 async function openPlugin(pluginId = id) {
@@ -210,10 +212,19 @@ try {
   assert(serial.startsWith('emulator-'), `Refusing device acceptance on non-emulator serial: ${serial}`);
   adb('get-state');
   const python = process.env.PYTHON ?? 'python';
-  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', dir, '--id', id], { stdio: 'inherit' });
-  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', dir, '--id', secondId], { stdio: 'inherit' });
-  adb('push', zipPath, `/sdcard/Download/${zipName}`);
-  adb('push', secondZipPath, `/sdcard/Download/${secondZipName}`);
+  const v1Dir = join(dir, 'v1');
+  const v2Dir = join(dir, 'v2');
+  const secondDir = join(dir, 'second');
+  const incompatibleDir = join(dir, 'incompatible');
+  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', v1Dir, '--id', id, '--version', '1.0.0'], { stdio: 'inherit' });
+  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', v2Dir, '--id', id, '--version', '1.1.0'], { stdio: 'inherit' });
+  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', incompatibleDir, '--id', id, '--version', '1.2.0', '--model-version', '2.0.0'], { stdio: 'inherit' });
+  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', secondDir, '--id', secondId], { stdio: 'inherit' });
+  adb('push', join(v1Dir, zipName), `/sdcard/Download/${zipName}`);
+  adb('push', join(v2Dir, zipName), `/sdcard/Download/${updateZipName}`);
+  adb('push', join(v1Dir, zipName), `/sdcard/Download/${downgradeZipName}`);
+  adb('push', join(incompatibleDir, zipName), `/sdcard/Download/${incompatibleZipName}`);
+  adb('push', join(secondDir, secondZipName), `/sdcard/Download/${secondZipName}`);
   const apk = join(process.cwd(), 'android-app', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
   adb('install', '-r', apk);
   const startApp = () => adb('shell', 'am', 'start', '-W', '-n', `${appId}/.MainActivity`);
@@ -266,6 +277,45 @@ try {
   assert.equal(response.result.records.length, 1);
   assert.equal(await cdp.evaluate("localStorage.getItem('stage14-retention-marker')"), 'kept');
   console.log('PASS: records and origin storage survive process restart while grants reset');
+  await leavePlugin();
+
+  adb('shell', 'am', 'force-stop', appId);
+  adb('shell', 'run-as', appId, 'mv', `files/plugins/${id}`, `files/plugins/.backup-${id}-12345`);
+  startApp();
+  await ensurePluginVisible(id);
+  await openPlugin();
+  await grant('data.read');
+  response = await cdp.evaluate("__probeRequest('data.read', { collection: 'notes' })");
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(response.result.records[0].data.title, 'Stage 1.4 sample');
+  console.log('PASS: interrupted directory swap restores the previous installed package');
+  await leavePlugin();
+
+  await importPackage(updateZipName, id, true);
+  await openPlugin();
+  await grant('data.read');
+  response = await cdp.evaluate("__probeRequest('data.read', { collection: 'notes' })");
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(response.result.records.length, 1);
+  assert.equal(response.result.records[0].data.title, 'Stage 1.4 sample');
+  await leavePlugin();
+  await importPackage(downgradeZipName, id);
+  await until(() => uiNodes().some(item => item.text.includes('已安装相同或更新版本，未覆盖现有插件。')), 'downgrade rejection');
+  await openPlugin();
+  await grant('data.read');
+  response = await cdp.evaluate("__probeRequest('data.read', { collection: 'notes' })");
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(response.result.records[0].data.title, 'Stage 1.4 sample');
+  console.log('PASS: confirmed compatible upgrade preserves data; downgrade is rejected with data intact');
+  await leavePlugin();
+  await importPackage(incompatibleZipName, id);
+  await until(() => uiNodes().some(item => item.text.includes('新版本的数据模型不兼容，现有插件保持不变。')), 'incompatible migration rejection');
+  await openPlugin();
+  await grant('data.read');
+  response = await cdp.evaluate("__probeRequest('data.read', { collection: 'notes' })");
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(response.result.records[0].data.title, 'Stage 1.4 sample');
+  console.log('PASS: unsupported data model migration is rejected while the prior package and records remain intact');
   await leavePlugin();
 
   await importPackage(secondZipName, secondId);
@@ -332,7 +382,7 @@ try {
   cdp?.close();
   if (forwardedPort) spawnSync(adbPath, ['-s', serial, 'forward', '--remove', `tcp:${forwardedPort}`], { windowsHide: true });
   if (serial.startsWith('emulator-')) {
-    spawnSync(adbPath, ['-s', serial, 'shell', 'rm', '-f', `/sdcard/Download/${zipName}`, `/sdcard/Download/${secondZipName}`], { windowsHide: true });
+    spawnSync(adbPath, ['-s', serial, 'shell', 'rm', '-f', `/sdcard/Download/${zipName}`, `/sdcard/Download/${updateZipName}`, `/sdcard/Download/${downgradeZipName}`, `/sdcard/Download/${incompatibleZipName}`, `/sdcard/Download/${secondZipName}`], { windowsHide: true });
   }
   await rm(dir, { recursive: true, force: true });
 }

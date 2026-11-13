@@ -91,7 +91,9 @@ internal class LocalPluginStore(context: Context) {
         val pkg = pending.remove(candidate.directory.name) ?: fail("PACKAGE_CORRUPT")
         val stage = File(root, ".stage-${System.nanoTime()}")
         val target = File(root, pkg.id)
-        val backup = File(root, ".backup-${System.nanoTime()}")
+        // Include the plugin ID so startup recovery can restore this directory if the
+        // process dies after moving the active install but before switching the stage.
+        val backup = File(root, ".backup-${pkg.id}-${System.nanoTime()}")
         try {
             if (!stage.mkdir()) fail("PACKAGE_CORRUPT")
             ZipFile(candidate.directory).use { zip ->

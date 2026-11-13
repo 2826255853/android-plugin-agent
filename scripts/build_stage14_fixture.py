@@ -15,7 +15,12 @@ SOURCE = ROOT / "plugin-protocol" / "fixtures" / "source" / "quick-notes-v1"
 FIXED_TIME = (2020, 1, 1, 0, 0, 0)
 
 
-def build_package(plugin_id: str, output: Path) -> None:
+def build_package(
+    plugin_id: str,
+    output: Path,
+    version: str = "1.1.0",
+    model_version: str = "1.0.0",
+) -> None:
     files = {
         path.name: path.read_bytes().replace(b"__PLUGIN_ID__", plugin_id.encode("ascii"))
         for path in sorted(SOURCE.iterdir())
@@ -27,12 +32,12 @@ def build_package(plugin_id: str, output: Path) -> None:
         "manifestVersion": 1,
         "id": plugin_id,
         "name": "Quick Notes",
-        "version": "1.1.0",
+        "version": version,
         "hostApi": {"min": "1.0.0", "max": "1.0.0"},
         "entry": "index.html",
         "capabilities": ["data.read", "data.write"],
         "dataModel": {
-            "version": "1.0.0",
+            "version": model_version,
             "collections": [
                 {
                     "id": "notes",
@@ -64,11 +69,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", type=Path, required=True, help="output directory, preferably a temporary folder")
     parser.add_argument("--id", default="org.example.quick-notes", help="plugin ID; use a second ID to test storage isolation")
+    parser.add_argument("--version", default="1.1.0", help="stable plugin version for upgrade and rollback fixtures")
+    parser.add_argument("--model-version", default="1.0.0", help="stable data model version; incompatible changes are rejected")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+", args.id):
         parser.error("--id must be a lowercase reverse-domain plugin ID")
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", args.version):
+        parser.error("--version must be a stable MAJOR.MINOR.PATCH version")
     output = args.out_dir / f"{args.id.rsplit('.', 1)[-1]}.zip"
-    build_package(args.id, output)
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9]*)", args.model_version):
+        parser.error("--model-version must be a stable MAJOR.MINOR.PATCH version")
+    build_package(args.id, output, args.version, args.model_version)
     print(f"{output} {hashlib.sha256(output.read_bytes()).hexdigest()}")
     return 0
 

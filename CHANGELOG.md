@@ -4,6 +4,14 @@
 
 ## 2026-11-14
 
+- **变更：**完成阶段 1.5 可用模拟器回归：修复 `LocalPluginStore` 中断更新后旧安装无法按插件 ID 恢复的问题；扩展临时 Quick Notes 夹具和 `scripts/verify-plugin-data.mjs`，覆盖兼容升级、拒绝降级、不兼容数据模型拒绝及目录切换中断恢复；更新阶段计划、评审、项目说明和验证记录。
+- **原因/影响：**升级过程中进程中断时保留并恢复原安装；验证兼容更新保留 SQLite 记录，且未实现字段迁移时拒绝不兼容模型，避免丢失或错误读取现有数据。阶段记录明确 API 23、真机、旧 WebView 和数值配额边界仍未覆盖，R-04 阶段门保持开放。
+- **验证：**在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug :app:lintDebug --offline` 通过，Lint 0 errors、5 warnings；`node scripts/verify-plugin-data.mjs`、`ANDROID_SERIAL=emulator-5554 node scripts/verify-bridge.mjs android`、`node --check scripts/verify-plugin-data.mjs`、`python -m py_compile scripts/build_stage14_fixture.py`、`python plugin-protocol/fixtures/verify_fixtures.py`（17 固定、12 边界夹具）及 `git diff --check` 通过。Android API 37 / WebView 145 模拟器；未测试真机/API 23/旧 WebView，未逐项执行 Android 导入 ZIP 完整负例矩阵或存储/分页配额数值边界。
+
+- **变更：**将 Android `targetSdk` 从 28 升至 35；`MainActivity` 启用边到边布局，并为列表/插件页设置安全绘制边距，Manifest 配置输入法 `adjustResize`。同步 `项目介绍.md`、`计划文档.md`、`阶段0评审.md` 和 `android-app/验证记录.md` 中的 SDK/Lint 状态，保留历史验证结果。
+- **原因/影响：**修复 `ExpiredTargetSdkVersion` 错误，并适配升级后的系统栏/输入法布局；与现有 compileSdk 35 对齐，保持 minSdk 23 和现有工具链/依赖，不增加 Lint 抑制或基线。
+- **验证：**在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug :app:lintDebug --offline` 成功，Lint 为 0 errors、5 warnings（4 项既有警告和升级后新增的 `DataExtractionRules` 提示）；`aapt dump badging` 确认 targetSdk 35、minSdk 23。Android API 37 / WebView 145 模拟器的 `node scripts/verify-plugin-data.mjs` 全部通过，覆盖 ZIP 导入、权限、读写、重启、隔离及移除保留/删除；`ANDROID_SERIAL=emulator-5554 node scripts/verify-bridge.mjs android` 和 `git diff --check` 通过。未进行真机、最低版本、旧 WebView 或备份/迁移验证，具体边界见验证记录。
+
 - **变更：**完成阶段 1.4 插件数据接口：新增清单绑定的 `InstalledPluginBridge`、按插件 ID/集合分区的应用私有 `PluginDataStore`、Quick Notes 数据读写界面和临时验收包/Android 模拟器验收脚本；WebKit 依赖升至 1.13.0 以支持特性检测及按来源清理；更新 `插件协议草案.md`、`计划文档.md`、`项目介绍.md`、`阶段0评审.md` 和 `android-app/验证记录.md`。
 - **原因/影响：**提供严格来源/身份/声明/参数校验、默认拒绝且分项授权的会话级读写、持久隔离数据和明确卸载数据生命周期；默认保留数据，用户确认删除时才清理，避免静默丢失。数据配额、未实现迁移/升级回滚和设备覆盖边界已记录。
 - **验证：**在 `android-app/` 执行 `:app:assembleDebug` 成功；Android 37 / WebView 145 模拟器运行 `node scripts/verify-plugin-data.mjs` 全部通过，覆盖授权、拒绝、重启、隔离及卸载保留/删除；`node scripts/verify-bridge.mjs browser` 与 `node scripts/verify-bridge.mjs android`、`python plugin-protocol/fixtures/verify_fixtures.py`（17 固定、12 边界夹具）、Node/Python 脚本语法检查和 `git diff --check` 通过。`:app:lintDebug --offline` 分析后退出 1，仍为既有 `targetSdk = 28` 的 1 项错误和 4 项警告；未逐项实测数据配额数值边界，未进行真机测试。

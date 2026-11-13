@@ -13,6 +13,7 @@ import android.webkit.MimeTypeMap
 import android.webkit.WebStorage
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
@@ -67,6 +69,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
 
         val webViewVersion = if (android.os.Build.VERSION.SDK_INT >= 26) {
             WebView.getCurrentWebViewPackage()?.versionName ?: "unavailable"
@@ -153,7 +156,7 @@ class MainActivity : ComponentActivity() {
 
                 val active = activePlugin
                 if (active != null) {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
                         Row(modifier = Modifier.fillMaxWidth()) {
                             Button(onClick = { closePlugin() }) { Text("返回插件列表") }
                             Text("${active.name}  ${active.version}", modifier = Modifier.padding(12.dp))
@@ -204,7 +207,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 } else {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
                         Row(modifier = Modifier.fillMaxWidth()) {
                             Text("本地插件", modifier = Modifier.padding(8.dp).weight(1f))
                         Button(onClick = {
