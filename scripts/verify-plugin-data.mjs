@@ -1,11 +1,24 @@
-// Android emulator acceptance for the installed-plugin data API; no third-party packages required.
+// Android device acceptance for the installed-plugin data API; no third-party packages required.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const fixtureBuilder = join(repoRoot, 'scripts', 'build_stage14_fixture.py');
+const apk = join(repoRoot, 'android-app', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+if (process.argv.includes('--preflight')) {
+  assert(existsSync(fixtureBuilder), `Fixture builder not found: ${fixtureBuilder}`);
+  assert(existsSync(apk), `Debug APK not found: ${apk}; build it from ${join(repoRoot, 'android-app')}`);
+  console.log(`Repository: ${repoRoot}`);
+  console.log(`Fixture builder: ${fixtureBuilder}`);
+  console.log(`Debug APK: ${apk}`);
+  process.exit(0);
+}
 const adbPath = process.env.ADB ?? join(process.env.LOCALAPPDATA ?? '', 'Android', 'Sdk', 'platform-tools', 'adb.exe');
 const serial = process.env.ANDROID_SERIAL ?? 'emulator-5554';
 const appId = 'com.example.pluginhost';
@@ -42,7 +55,7 @@ function uiNodes() {
   const nodes = [];
   for (const match of xml.matchAll(/<node\b([^>]*)>/g)) {
     const attrs = match[1];
-    const text = attrs.match(/\btext="([^"]*)"/)?.[1] ?? '';
+    const text = attrs.match(/\btext="([^"]*)"/)?.[1] ?? attrs.match(/\bcontent-desc="([^"]*)"/)?.[1] ?? '';
     const bounds = attrs.match(/\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
     if (!bounds) continue;
     nodes.push({
@@ -85,11 +98,25 @@ async function tapPluginAction(pluginId, actionText) {
   await pause(500);
 }
 async function openDownloadsInPicker() {
-  if (uiNodes().some(item => item.text === 'Files in Downloads')) return;
-  adb('shell', 'input', 'tap', '50', '120');
-  const folder = await until(() => uiNodes().find(item => item.text === 'Downloads' && item.top > 200), 'Downloads in picker navigation');
+  if (uiNodes().some(item => item.text === zipName || item.text === 'Files in Downloads')) return;
+  const home = uiNodes().find(item => item.text === '首页');
+  if (home) {
+    adb('shell', 'input', 'tap', String(home.x), String(home.y));
+    await pause(500);
+  }
+  const filesTab = uiNodes().find(item => item.text === '文件');
+  if (filesTab) {
+    adb('shell', 'input', 'tap', String(filesTab.x), String(filesTab.y));
+    await pause(500);
+  }
+  const storage = uiNodes().find(item => item.text === '手机存储' && item.top > 1000);
+  if (storage) {
+    adb('shell', 'input', 'tap', String(storage.x), String(storage.y));
+    await pause(500);
+  }
+  const folder = await until(() => uiNodes().find(item => ['Downloads', 'Download', '下载'].includes(item.text) && item.top > 200), 'Download folder in picker navigation');
   adb('shell', 'input', 'tap', String(folder.x), String(folder.y));
-  await pause(500);
+  await until(() => uiNodes().some(item => item.text === zipName), `test package ${zipName} in picker`);
 }
 
 class Cdp {
@@ -209,24 +236,31 @@ async function removePlugin(deleteData, pluginId = id) {
 }
 
 try {
-  assert(serial.startsWith('emulator-'), `Refusing device acceptance on non-emulator serial: ${serial}`);
+  assert(serial.startsWith('emulator-') || process.env.ANDROID_ALLOW_PHYSICAL === '1',
+    `Refusing device acceptance on non-emulator serial: ${serial}; set ANDROID_ALLOW_PHYSICAL=1 for an explicitly authorized physical-device run`);
   adb('get-state');
   const python = process.env.PYTHON ?? 'python';
   const v1Dir = join(dir, 'v1');
   const v2Dir = join(dir, 'v2');
   const secondDir = join(dir, 'second');
   const incompatibleDir = join(dir, 'incompatible');
-  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', v1Dir, '--id', id, '--version', '1.0.0'], { stdio: 'inherit' });
-  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', v2Dir, '--id', id, '--version', '1.1.0'], { stdio: 'inherit' });
-  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', incompatibleDir, '--id', id, '--version', '1.2.0', '--model-version', '2.0.0'], { stdio: 'inherit' });
-  execFileSync(python, [join(process.cwd(), 'scripts', 'build_stage14_fixture.py'), '--out-dir', secondDir, '--id', secondId], { stdio: 'inherit' });
+  execFileSync(python, [fixtureBuilder, '--out-dir', v1Dir, '--id', id, '--version', '1.0.0'], { stdio: 'inherit' });
+  execFileSync(python, [fixtureBuilder, '--out-dir', v2Dir, '--id', id, '--version', '1.1.0'], { stdio: 'inherit' });
+  execFileSync(python, [fixtureBuilder, '--out-dir', incompatibleDir, '--id', id, '--version', '1.2.0', '--model-version', '2.0.0'], { stdio: 'inherit' });
+  execFileSync(python, [fixtureBuilder, '--out-dir', secondDir, '--id', secondId], { stdio: 'inherit' });
   adb('push', join(v1Dir, zipName), `/sdcard/Download/${zipName}`);
   adb('push', join(v2Dir, zipName), `/sdcard/Download/${updateZipName}`);
   adb('push', join(v1Dir, zipName), `/sdcard/Download/${downgradeZipName}`);
   adb('push', join(incompatibleDir, zipName), `/sdcard/Download/${incompatibleZipName}`);
   adb('push', join(secondDir, secondZipName), `/sdcard/Download/${secondZipName}`);
-  const apk = join(process.cwd(), 'android-app', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+  assert(existsSync(apk), `Debug APK not found at ${apk}; run .\\gradlew.bat :app:assembleDebug from ${join(repoRoot, 'android-app')}`);
   adb('install', '-r', apk);
+  if (process.env.ANDROID_ALLOW_PHYSICAL === '1'
+    && adb('shell', 'dumpsys', 'activity', 'activities').includes('com.android.filemanager')) {
+    adb('shell', 'input', 'keyevent', '4');
+    await pause(500);
+  }
+  adb('shell', 'am', 'force-stop', appId);
   const startApp = () => adb('shell', 'am', 'start', '-W', '-n', `${appId}/.MainActivity`);
   startApp();
   await importPackage();
@@ -381,8 +415,6 @@ try {
 } finally {
   cdp?.close();
   if (forwardedPort) spawnSync(adbPath, ['-s', serial, 'forward', '--remove', `tcp:${forwardedPort}`], { windowsHide: true });
-  if (serial.startsWith('emulator-')) {
-    spawnSync(adbPath, ['-s', serial, 'shell', 'rm', '-f', `/sdcard/Download/${zipName}`, `/sdcard/Download/${updateZipName}`, `/sdcard/Download/${downgradeZipName}`, `/sdcard/Download/${incompatibleZipName}`, `/sdcard/Download/${secondZipName}`], { windowsHide: true });
-  }
+  spawnSync(adbPath, ['-s', serial, 'shell', 'rm', '-f', `/sdcard/Download/${zipName}`, `/sdcard/Download/${updateZipName}`, `/sdcard/Download/${downgradeZipName}`, `/sdcard/Download/${incompatibleZipName}`, `/sdcard/Download/${secondZipName}`], { windowsHide: true });
   await rm(dir, { recursive: true, force: true });
 }

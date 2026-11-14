@@ -1,6 +1,16 @@
 # 变更记录
 
+## 2026-11-15
+
+- **变更：**阶段 1.5 增加 vivo V2458A / Android 16 真机桥接回归记录；`scripts/verify-plugin-data.mjs` 增加显式 `ANDROID_ALLOW_PHYSICAL=1` 真机运行开关、真机临时 ZIP 清理及厂商选择器导航适配尝试。
+- **原因/影响：**补充真实 WebView/设备上的安全桥接证据，同时保留数据回归脚本默认拒绝真机的保护。真机桥接回归通过；vivo 选择器仍使数据/升级脚本无法进入导入阶段，阶段 1.5 / R-04 继续开放。
+- **验证：**`.\gradlew.bat :app:assembleDebug` 通过；`ANDROID_SERIAL=10AFC52CMP00985 node scripts/verify-bridge.mjs android` 通过（`ALL ANDROID CHECKS PASSED`）；真机 `node scripts/verify-plugin-data.mjs` 未完成，等待 Downloads 导航超时；`node --check scripts/verify-plugin-data.mjs` 与 `git diff --check` 通过。
+
 记录仓库中源代码、配置、依赖、资源、构建脚本和项目文档的每次变更。按时间倒序追加；每条记录说明改动、目的或影响，以及验证结果。详细规则见根目录 `AGENTS.md`。
+
+- **变更：**`scripts/verify-plugin-data.mjs` 改为从脚本自身路径解析仓库根目录，固定定位夹具生成器和 Debug APK，并增加 `--preflight` 路径检查。
+- **原因/影响：**从仓库根目录、`android-app/` 或其他工作目录启动时都使用同一组项目路径；预检可在连接设备前直接发现缺失的 APK 或夹具脚本。
+- **验证：**从 `C:\Users\ASUS\AppData\Local\Temp` 执行 `node C:\Codes\android-plugin-agent\scripts\verify-plugin-data.mjs --preflight`，正确解析并找到仓库内两项文件；`node --check scripts/verify-plugin-data.mjs` 和 `git diff --check` 通过。
 
 ## 2026-11-14
 
