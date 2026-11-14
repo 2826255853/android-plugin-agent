@@ -12,6 +12,7 @@ import java.io.RandomAccessFile
 import java.io.StringReader
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.zip.CRC32
 import java.util.zip.ZipFile
 
 /** Validates complete packages before writing any content beneath the private plugin store. */
@@ -230,18 +231,20 @@ internal class LocalPluginStore(context: Context) {
                 if (entry.size > 0 && (entry.compressedSize == 0L || entry.size > entry.compressedSize * MAX_RATIO)) fail("PACKAGE_LIMIT_EXCEEDED")
                 total += entry.size
                 if (total > MAX_TOTAL_BYTES || names.size >= MAX_ENTRIES) fail("PACKAGE_LIMIT_EXCEEDED")
-                // Drain every entry now: ZipFile verifies the stream CRC at EOF.
+                // ZipFile streams do not guarantee CRC validation; compare it explicitly.
                 var actual = 0L
+                val crc = CRC32()
                 zip.getInputStream(entry).use { input ->
                     val buffer = ByteArray(16 * 1024)
                     while (true) {
                         val n = input.read(buffer)
                         if (n < 0) break
                         actual += n
+                        crc.update(buffer, 0, n)
                         if (actual > MAX_RESOURCE_BYTES || (entry.name == "manifest.json" && actual > MAX_MANIFEST_BYTES)) fail("PACKAGE_LIMIT_EXCEEDED")
                     }
                 }
-                if (actual != entry.size) fail("PACKAGE_CORRUPT")
+                if (actual != entry.size || crc.value != entry.crc) fail("PACKAGE_CORRUPT")
                 names[entry.name] = entry
             }
         }
@@ -426,6 +429,9 @@ internal class LocalPluginStore(context: Context) {
                 if (nameLength == 0 || position + 46 + nameLength + extraLength + commentLength > length) fail("PACKAGE_CORRUPT")
                 val nameBytes = ByteArray(nameLength); raf.readFully(nameBytes)
                 val name = nameBytes.toString(Charsets.US_ASCII)
+                // Some Android ZipFile versions throw on traversal names before enumeration.
+                // Classify unsafe names here so the protocol error is stable across runtimes.
+                if (!validPath(name)) fail("PACKAGE_ENTRY_INVALID")
                 val unixType = ((external ushr 16).toInt() and UNIX_TYPE_MASK)
                 if (result.put(name, CentralEntry(flags and ((1 shl 0) or (1 shl 6)) != 0, method, disk, unixType)) != null) fail("PACKAGE_DUPLICATE_ENTRY")
                 position += 46L + nameLength + extraLength + commentLength
@@ -446,9 +452,11 @@ internal class LocalPluginStore(context: Context) {
         val oldManifest = runCatching { JSONObject(File(old.directory, "manifest.json").readText()) }.getOrNull() ?: return false
         val a = oldManifest.optJSONObject("dataModel") ?: return false
         val av = a.optString("version").split('.'); val bv = next.optString("version").split('.')
-        if (av.size != 3 || bv.size != 3 || av[0] != bv[0]) return false
+        if (av.size != 3 || bv.size != 3 || av[0] != bv[0] || compareVersions(next.getString("version"), a.getString("version")) < 0) return false
         val oldCols = a.optJSONArray("collections") ?: return false
         val newCols = next.optJSONArray("collections") ?: return false
+        // Schema changes require a new minor model version, even if the plugin version grows.
+        if (av[1] == bv[1] && canonicalModelValue(oldCols) != canonicalModelValue(newCols)) return false
         val newById = (0 until newCols.length()).associate { newCols.getJSONObject(it).getString("id") to newCols.getJSONObject(it) }
         for (i in 0 until oldCols.length()) {
             val oc = oldCols.getJSONObject(i); val nc = newById[oc.getString("id")] ?: return false
@@ -457,13 +465,25 @@ internal class LocalPluginStore(context: Context) {
             for (j in 0 until of.length()) {
                 val oldField = of.getJSONObject(j); val field = byId[oldField.getString("id")] ?: return false
                 if (field.optString("type") != oldField.optString("type") || (!oldField.optBoolean("required") && field.optBoolean("required"))) return false
-                if (oldField.has("maxLength") && (!field.has("maxLength") || field.optInt("maxLength") < oldField.optInt("maxLength"))) return false
-                if (oldField.has("minimum") && (!field.has("minimum") || field.optDouble("minimum") > oldField.optDouble("minimum"))) return false
-                if (oldField.has("maximum") && (!field.has("maximum") || field.optDouble("maximum") < oldField.optDouble("maximum"))) return false
+                if (field.has("maxLength") && (!oldField.has("maxLength") || field.getInt("maxLength") < oldField.getInt("maxLength"))) return false
+                if (field.has("minimum") && (!oldField.has("minimum") || field.get("minimum").toString().toBigDecimal() > oldField.get("minimum").toString().toBigDecimal())) return false
+                if (field.has("maximum") && (!oldField.has("maximum") || field.get("maximum").toString().toBigDecimal() < oldField.get("maximum").toString().toBigDecimal())) return false
             }
             for (j in 0 until nf.length()) { val field = nf.getJSONObject(j); if (field.getString("id") !in (0 until of.length()).map { of.getJSONObject(it).getString("id") } && field.optBoolean("required")) return false }
         }
         return true
+    }
+
+    // Collection/field order and JSON key order do not change the data model.
+    private fun canonicalModelValue(value: Any): String = when (value) {
+        is JSONObject -> value.keys().asSequence().sorted().joinToString(prefix = "{", postfix = "}") {
+            JSONObject.quote(it) + ":" + canonicalModelValue(value.get(it))
+        }
+        is JSONArray -> (0 until value.length()).map { canonicalModelValue(value.get(it)) }.sorted()
+            .joinToString(prefix = "[", postfix = "]")
+        is String -> JSONObject.quote(value)
+        is Number -> value.toString().toBigDecimal().stripTrailingZeros().toString()
+        else -> value.toString()
     }
 
     companion object {

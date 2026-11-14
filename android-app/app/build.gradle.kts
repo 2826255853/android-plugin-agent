@@ -23,10 +23,16 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "com.example.pluginhost.Stage15Instrumentation"
     }
 
     buildFeatures {
         compose = true
+    }
+
+    // Only the regression APK includes the temporary package matrix prepared by verify-stage15.py.
+    providers.gradleProperty("stage15Assets").orNull?.let { directory ->
+        sourceSets.getByName("androidTest").assets.srcDir(directory)
     }
 }
 

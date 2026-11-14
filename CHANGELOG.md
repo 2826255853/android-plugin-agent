@@ -2,6 +2,14 @@
 
 ## 2026-11-15
 
+- **变更：**完成阶段 1.5：新增无第三方测试依赖的 `Stage15Instrumentation` 和 `scripts/verify-stage15.py`，通过 Gradle `stage15Assets` 仅向测试 APK 注入临时包矩阵；修复 `LocalPluginStore` 的 CRC32 校验、Android 路径穿越错误分类、升级约束方向和模型版本/语义一致性判断。新增 `阶段1评审.md`，同步协议、计划、项目介绍、阶段 0 评审及 `android-app/验证记录.md`。
+- **原因/影响：**补齐实际 Android 导入、升级和数据配额证据，拒绝 CRC 损坏及不兼容更新，放宽约束时保留旧数据；阶段 1 模拟器验收通过，可进入阶段 2。保留 API 23/旧 WebView 等兼容风险及可选真机补验边界；不增加应用依赖、不调整 SDK。
+- **验证：**Android API 37 / WebView 145.0.7632.218 模拟器上，`python scripts/verify-stage15.py` 最终 57 项通过、0 项失败（首轮 9 项失败均已修复）；`node scripts/verify-plugin-data.mjs` 和指定该模拟器的 `node scripts/verify-bridge.mjs android` 通过，Browser Adapter 回归另通过。`android-app/` 下 `.\gradlew.bat :app:assembleDebug :app:lintDebug --offline` 成功，Lint 0 errors、5 项既有 warnings；测试 APK 构建、桌面 17 固定负例/12 边界、Python/Node 语法检查及 `git diff --check` 通过。未运行 API 23、旧 WebView 或本轮真机测试，原因及其他未覆盖项已记录。
+
+- **变更：**更新 `AGENTS.md`、`项目介绍.md`、`计划文档.md`、`阶段0评审.md` 和 `桥接实验.md`，明确真机测试属于可选补充，不是开发、阶段验收或项目推进的普遍前置条件；同步调整 R-04 和设备验收描述，保留未覆盖设备范围的兼容性边界。
+- **原因/影响：**避免将真机补验或设备资源不可用误作项目进度阻塞，同时继续准确区分模拟器与真机证据；具体验收明确依赖某类设备或权限时，仍须完成相应验证。
+- **验证：**人工检查相关文档中的测试政策、阶段门和风险描述；`git diff --check` 通过。仅修改 Markdown 文档，未运行 Android 构建或设备测试。
+
 - **变更：**阶段 1.5 增加 vivo V2458A / Android 16 真机桥接回归记录；`scripts/verify-plugin-data.mjs` 增加显式 `ANDROID_ALLOW_PHYSICAL=1` 真机运行开关、真机临时 ZIP 清理及厂商选择器导航适配尝试。
 - **原因/影响：**补充真实 WebView/设备上的安全桥接证据，同时保留数据回归脚本默认拒绝真机的保护。真机桥接回归通过；vivo 选择器仍使数据/升级脚本无法进入导入阶段，阶段 1.5 / R-04 继续开放。
 - **验证：**`.\gradlew.bat :app:assembleDebug` 通过；`ANDROID_SERIAL=10AFC52CMP00985 node scripts/verify-bridge.mjs android` 通过（`ALL ANDROID CHECKS PASSED`）；真机 `node scripts/verify-plugin-data.mjs` 未完成，等待 Downloads 导航超时；`node --check scripts/verify-plugin-data.mjs` 与 `git diff --check` 通过。
