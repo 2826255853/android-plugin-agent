@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "projectId": "quick-notes",
+  "version": 1,
+  "status": "draft",
+  "title": "Quick Notes",
+  "goal": "快速创建并查看保存在本机的简短笔记。",
+  "storesData": true,
+  "pages": [
+    { "id": "notes_list", "name": "笔记列表", "purpose": "查看已保存笔记并进入新增操作。" },
+    { "id": "note_editor", "name": "笔记编辑", "purpose": "输入标题和正文并保存笔记。" }
+  ],
+  "collections": [
+    {
+      "id": "notes",
+      "fields": [
+        { "id": "title", "type": "string", "required": true, "maxLength": 120 },
+        { "id": "body", "type": "string", "required": false, "maxLength": 5000 }
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "id": "create_note",
+      "trigger": "用户点击新增笔记",
+      "steps": ["输入标题和正文", "保存", "返回列表并看到新笔记"]
+    }
+  ],
+  "permissions": [
+    { "capability": "data.read", "justification": "展示已保存笔记。" },
+    { "capability": "data.write", "justification": "保存用户新建的笔记。" }
+  ],
+  "acceptanceCriteria": [
+    { "id": "save_note", "scenario": "填写标题后保存笔记", "expected": "列表显示该笔记，重启宿主后仍可读取。" }
+  ],
+  "unsupportedItems": []
+}

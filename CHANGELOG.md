@@ -2,6 +2,12 @@
 
 ## 2026-11-15
 
+- **变更：**完成阶段 2.1 规格与能力基线：新增版本 1 规格 Schema、Quick Notes 草稿、确定性规格审阅/澄清与确认版本保存 CLI，以及 5 项标准库验收；新增 `阶段2.1规格流程.md` 并同步阶段计划和项目说明。
+- **原因/影响：**将目标、页面、数据字段、操作流程、权限理由和验收条件固定为可校验结构；缺项生成明确追问，超出当前宿主白名单的能力必须附原因和替代方案；确认规格按项目连续版本原子保存且不覆盖旧版本。未接入模型、服务端、生成或预览，避免把规格确认误认为插件交付。
+- **验证：**`python scripts/verify-stage21.py` 通过（5 项）；`python -m py_compile scripts/spec_workflow.py scripts/verify-stage21.py` 和 Schema/样例 JSON 解析通过；在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug` 成功（35 项任务均为最新）；`git diff --check` 通过。未执行 Android 设备测试，本次变更为桌面端规格工具与文档。
+
+## 2026-11-15
+
 - **变更：**完成阶段 1.5：新增无第三方测试依赖的 `Stage15Instrumentation` 和 `scripts/verify-stage15.py`，通过 Gradle `stage15Assets` 仅向测试 APK 注入临时包矩阵；修复 `LocalPluginStore` 的 CRC32 校验、Android 路径穿越错误分类、升级约束方向和模型版本/语义一致性判断。新增 `阶段1评审.md`，同步协议、计划、项目介绍、阶段 0 评审及 `android-app/验证记录.md`。
 - **原因/影响：**补齐实际 Android 导入、升级和数据配额证据，拒绝 CRC 损坏及不兼容更新，放宽约束时保留旧数据；阶段 1 模拟器验收通过，可进入阶段 2。保留 API 23/旧 WebView 等兼容风险及可选真机补验边界；不增加应用依赖、不调整 SDK。
 - **验证：**Android API 37 / WebView 145.0.7632.218 模拟器上，`python scripts/verify-stage15.py` 最终 57 项通过、0 项失败（首轮 9 项失败均已修复）；`node scripts/verify-plugin-data.mjs` 和指定该模拟器的 `node scripts/verify-bridge.mjs android` 通过，Browser Adapter 回归另通过。`android-app/` 下 `.\gradlew.bat :app:assembleDebug :app:lintDebug --offline` 成功，Lint 0 errors、5 项既有 warnings；测试 APK 构建、桌面 17 固定负例/12 边界、Python/Node 语法检查及 `git diff --check` 通过。未运行 API 23、旧 WebView 或本轮真机测试，原因及其他未覆盖项已记录。
