@@ -1,5 +1,11 @@
 # 变更记录
 
+## 2026-11-17
+
+- **变更：**完成阶段 2.4：新增 `scripts/browser_preview.py`，只接受阶段 2.3 严格校验的 ZIP、仅绑定 loopback 提供清单资源，并在内存注入浏览器模拟桥；插件页通过 localhost 别名源与 127.0.0.1 控制页隔离；新增 `desktop-generator/browser-preview/` 控制条、适配器和样式，以及 `scripts/verify-stage24.mjs` Edge 端到端验收。Quick Notes 在读取权限拒绝/撤销时清空已显示列表。新增 `阶段2.4浏览器预览.md`，同步阶段计划、项目说明及阶段 2.3 的后续状态。
+- **原因/影响：**提供实际生成包页面和基本交互预览，数据读写各自默认拒绝并由用户显式模拟授权；浏览器数据隔离在当前源 localStorage，设备能力不误判通过，成功构建与预览仍无交付资格。当前预览仅适用于固定 Quick Notes 模板，不作为任意不可信代码的隔离环境。
+- **验证：**`node scripts/verify-stage24.mjs <built-package.zip>` 在 Windows / Node.js 24 / Microsoft Edge 通过预览横幅、插件无法访问控制页、默认拒绝、分项授权、笔记保存与读取、撤销清空和包外资源拒绝；`python scripts/verify-stage21.py`（5 项）、`python scripts/verify-stage22.py`（29 项）、`python scripts/verify-stage23.py`（30 项）通过；Python/Node 语法检查、`git diff --check` 通过；在 `android-app/` 使用 JDK 17 执行 `:app:assembleDebug` 成功（35 项任务均为最新）。未运行模拟器或真机交互测试，原因是本次交付为桌面浏览器预览；未调用真实模型或设备能力。
+
 ## 2026-11-16
 
 - **变更：**完成阶段 2.3：新增 `scripts/plugin_generation.py`、`scripts/plugin_package.py`、Quick Notes 受限模板和 `scripts/verify-stage23.py`；实现确认规格到离线 Web 源码、严格清单/资源/ZIP 校验、确定性静态构建及固定静态检查。扩展任务仓储，原子启动并占用构建轮次，保存规格/源码/包摘要、分阶段失败报告、成功包快照及 `built` 终态，支持导出失败后恢复；继续执行取消/超时/限额/修复停止。新增 `阶段2.3生成与构建.md`，同步计划、项目介绍、2.2 边界及阶段 0 风险补充。

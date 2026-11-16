@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; frame-src http://localhost:__PORT__; connect-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'">
+  <title>插件浏览器预览</title>
+  <link rel="stylesheet" href="/preview.css">
+</head>
+<body>
+  <header>
+    <strong>浏览器模拟</strong>
+    <span class="notice">数据仅保存在此浏览器；不代表 Android 设备能力已验证。</span>
+    <label><input id="read-grant" type="checkbox">模拟 data.read 授权</label>
+    <label><input id="write-grant" type="checkbox">模拟 data.write 授权</label>
+  </header>
+  <iframe title="插件预览" src="http://localhost:__PORT__/plugin/__ENTRY__" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+  <script src="/preview-config.js"></script>
+  <script src="/preview-ui.js"></script>
+</body>
+</html>

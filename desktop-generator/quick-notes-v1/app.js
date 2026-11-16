@@ -82,7 +82,16 @@ async function loadNotes(append = false) {
   status.textContent = "正在读取笔记…";
   try {
     const response = await call("data.read", { collection: "notes", limit: 100, after: append ? cursor : "0" });
-    if (!response.ok) { displayError(response); return false; }
+    if (!response.ok) {
+      if (response.error?.code === "PERMISSION_DENIED" || response.error?.code === "CAPABILITY_NOT_DECLARED") {
+        noteList.replaceChildren();
+        cursor = "0";
+        hasMore = false;
+        moreButton.hidden = true;
+      }
+      displayError(response);
+      return false;
+    }
     if (!Array.isArray(response.result?.records)) throw new Error("INVALID_RESPONSE");
     renderRecords(response.result.records, append);
     cursor = response.result.nextCursor ?? "0";

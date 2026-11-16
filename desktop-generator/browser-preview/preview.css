@@ -1,0 +1,8 @@
+* { box-sizing: border-box; }
+body { margin: 0; color: #17212b; background: #f1f4f7; font: 14px system-ui, sans-serif; }
+header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; padding: 12px 18px; background: #fff; border-bottom: 1px solid #cbd3dc; }
+strong { font-size: 16px; }
+.notice { color: #7b3d00; }
+label { display: inline-flex; align-items: center; gap: 6px; }
+iframe { display: block; width: min(100%, 760px); height: calc(100dvh - 62px); min-height: 420px; margin: 0 auto; background: #fff; border: 0; }
+@media (max-width: 540px) { header { gap: 8px 14px; padding: 10px 12px; } iframe { width: 100%; height: calc(100dvh - 88px); } }
