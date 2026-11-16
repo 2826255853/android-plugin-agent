@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'">
+    <title>__TITLE__</title>
+    <link rel="stylesheet" href="app.css">
+  </head>
+  <body>
+    <main>
+      <h1>__TITLE__</h1>
+      <p id="status" role="status">正在检查宿主数据接口…</p>
+      <section id="list-page">
+        <h2>笔记列表</h2>
+        <button id="new-note" type="button">新增笔记</button>
+        <button id="refresh" type="button">刷新笔记</button>
+        <ul id="notes"></ul>
+        <button id="load-more" type="button" hidden>加载更多</button>
+      </section>
+      <section id="editor-page" hidden>
+        <h2>笔记编辑</h2>
+        <form id="note-form">
+          <label for="title">标题</label>
+          <input id="title" maxlength="__TITLE_LIMIT__" required>
+          <label for="body">正文</label>
+          <textarea id="body" maxlength="__BODY_LIMIT__" rows="5"></textarea>
+          <button type="submit">保存笔记</button>
+          <button id="cancel-edit" type="button">返回列表</button>
+        </form>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

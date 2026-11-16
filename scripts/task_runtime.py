@@ -1,4 +1,4 @@
-"""Stage 2.2 local task ledger and bounded tools; no model or code execution.
+"""Local task ledger and bounded tools; no model or code execution.
 
 Only the trusted coordinator uses TaskStore lifecycle/accounting methods.
 Untrusted agent requests enter through TaskStore.tool, never through a shell.
@@ -28,7 +28,7 @@ from spec_workflow import SpecError, validate_spec
 
 DEFAULT_STORE = Path(__file__).resolve().parents[1] / "desktop-tasks"
 ACTIVE = {"generating", "validating"}
-TERMINAL = {"failed", "cancelled", "stopped"}
+TERMINAL = {"failed", "cancelled", "stopped", "built"}
 TOOLS = {"read_spec", "read_file", "apply_patch", "validate_spec", "run_tests"}
 FILE_BYTES = 256 * 1024
 WORKSPACE_BYTES = 2 * 1024 * 1024
@@ -112,6 +112,15 @@ class TaskStore:
                 CREATE TABLE IF NOT EXISTS patches (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, path TEXT NOT NULL,
                     before_sha256 TEXT, after_sha256 TEXT NOT NULL, before_content BLOB, after_content BLOB NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
+                );
+                CREATE TABLE IF NOT EXISTS builds (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+                    repair_round INTEGER NOT NULL, report_json TEXT NOT NULL,
+                    package BLOB, FOREIGN KEY(task_id) REFERENCES tasks(id)
+                );
+                CREATE TABLE IF NOT EXISTS build_claims (
+                    task_id TEXT PRIMARY KEY, repair_round INTEGER NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
             """)
@@ -205,22 +214,28 @@ class TaskStore:
             self._event(db, task, "TASK_CREATED")
         return self.inspect(task_id)
 
+    def _start(self, db: sqlite3.Connection, task: dict[str, Any]) -> str | None:
+        path = self.workspaces / task["id"]
+        try:
+            no_links(path)
+            path.mkdir(exist_ok=False)
+        except (TaskError, OSError):
+            self._stop(db, task, "WORKSPACE_UNSAFE")
+            return "WORKSPACE_UNSAFE"
+        now = self.clock()
+        deadline = now + json.loads(task["limits_json"])["maxDurationSeconds"]
+        db.execute("UPDATE tasks SET started_at = ?, deadline = ?, status = 'generating' WHERE id = ?",
+                   (now, deadline, task["id"]))
+        task.update(status="generating", started_at=now, deadline=deadline)
+        return None
+
     def transition(self, task_id: str, target: str) -> dict[str, Any]:
         with self._transaction() as db:
             task = self._task(db, task_id)
             if task["status"] == "ready" and target == "generating":
-                path = self.workspaces / task_id
-                try:
-                    no_links(path)
-                    path.mkdir(exist_ok=False)
-                except (TaskError, OSError):
-                    self._stop(db, task, "WORKSPACE_UNSAFE")
-                    return self._result(task, "WORKSPACE_UNSAFE")
-                now = self.clock()
-                deadline = now + json.loads(task["limits_json"])["maxDurationSeconds"]
-                db.execute("UPDATE tasks SET started_at = ?, deadline = ?, status = 'generating' WHERE id = ?",
-                           (now, deadline, task_id))
-                task["status"] = "generating"
+                error = self._start(db, task)
+                if error:
+                    return self._result(task, error)
             else:
                 error = self._guard(db, task)
                 if error:
@@ -253,6 +268,8 @@ class TaskStore:
             calls = [dict(row) for row in db.execute("SELECT id, reserved, actual FROM model_calls WHERE task_id = ?", (task_id,))]
             patches = [dict(row) for row in db.execute(
                 "SELECT seq, path, before_sha256, after_sha256 FROM patches WHERE task_id = ? ORDER BY seq", (task_id,))]
+            builds = [json.loads(row[0]) for row in db.execute(
+                "SELECT report_json FROM builds WHERE task_id = ? ORDER BY seq", (task_id,))]
             elapsed = 0 if task["started_at"] is None else max(0, (task["finished_at"] or self.clock()) - task["started_at"])
             return self._result(task, projectId=task["project_id"], specVersion=task["spec_version"],
                                 specSha256=task["spec_sha256"], limits=json.loads(task["limits_json"]),
@@ -260,7 +277,97 @@ class TaskStore:
                                 finishedAt=task["finished_at"], elapsedSeconds=elapsed, patches=patches,
                                 spentMicros=task["spent_micros"], reservedMicros=task["reserved_micros"],
                                 repairRounds=task["repair_rounds"], toolCalls=task["tool_calls"],
-                                stopCode=task["stop_code"], events=events, modelCalls=calls)
+                                stopCode=task["stop_code"], events=events, modelCalls=calls, builds=builds)
+
+    def claim_build(self, task_id: str) -> dict[str, Any]:
+        """Claim one coordinator per task/round, including after process restart."""
+        with self._transaction() as db:
+            task = self._task(db, task_id)
+            if task["status"] == "ready":
+                error = self._start(db, task)
+                if error:
+                    return self._result(task, error)
+                self._event(db, task, "STATE_CHANGED", target="generating")
+            else:
+                error = self._guard(db, task)
+                if error:
+                    return self._result(task, error)
+            if task["last_error_round"] == task["repair_rounds"]:
+                return self._result(task, "REPAIR_REQUIRED")
+            claim = db.execute("SELECT repair_round FROM build_claims WHERE task_id = ?", (task_id,)).fetchone()
+            if claim is not None and claim[0] == task["repair_rounds"]:
+                return self._result(task, "BUILD_IN_PROGRESS")
+            db.execute("INSERT OR REPLACE INTO build_claims(task_id, repair_round) VALUES (?, ?)",
+                       (task_id, task["repair_rounds"]))
+            self._event(db, task, "BUILD_CLAIMED", repairRound=task["repair_rounds"])
+            return self._result(task)
+
+    def save_build(self, task_id: str, report: dict[str, Any], package: bytes | None = None) -> dict[str, Any]:
+        """Trusted pure-data builder only; never an Agent tool or publication gate.
+
+        The immutable package snapshot lives in SQLite, outside Agent paths.
+        Cancellation and finalization share a transaction, so a cancelled task
+        cannot acquire a successful artifact. External execution is not enabled.
+        """
+        with self._transaction() as db:
+            task = self._task(db, task_id)
+            if package is not None:
+                error = self._guard(db, task)
+                if error:
+                    return self._result(task, error)
+            else:
+                # Retain the phase diagnostic even when a quota, cancellation
+                # or deadline has already frozen the terminal outcome.
+                need(task["status"] in ACTIVE | {"failed", "cancelled", "stopped"}, "INVALID_BUILD_REPORT")
+            need(report.get("taskId") == task_id and report.get("specSha256") == task["spec_sha256"], "INVALID_BUILD_REPORT")
+            need(type(report.get("ok")) is bool and report.get("deliverable") is False, "INVALID_BUILD_REPORT")
+            need(len(encoded(report)) <= FILE_BYTES, "INVALID_BUILD_REPORT")
+            need(db.execute("SELECT 1 FROM builds WHERE task_id = ? AND repair_round = ?",
+                            (task_id, task["repair_rounds"])).fetchone() is None, "BUILD_REPORT_EXISTS")
+            if package is not None:
+                need(report["ok"] and task["status"] == "validating" and task["last_error_round"] != task["repair_rounds"], "INVALID_BUILD_REPORT")
+                need(type(package) is bytes and len(package) <= WORKSPACE_BYTES, "INVALID_BUILD_REPORT")
+                need(report.get("artifact", {}).get("sha256") == digest(package), "INVALID_BUILD_REPORT")
+                need(task["reserved_micros"] == 0, "UNSETTLED_MODEL_CALLS")
+                error = self._guard(db, task)
+                if error:
+                    return self._result(task, error)
+                finished = self.clock()
+                db.execute("UPDATE tasks SET status = 'built', finished_at = ? WHERE id = ?", (finished, task_id))
+                task.update(status="built", finished_at=finished)
+            else:
+                need(not report["ok"], "INVALID_BUILD_REPORT")
+            db.execute("INSERT INTO builds(task_id, repair_round, report_json, package) VALUES (?, ?, ?, ?)",
+                       (task_id, task["repair_rounds"], encoded(report).decode("utf-8"), package))
+            self._event(db, task, "BUILD_PASSED" if package is not None else "BUILD_FAILED",
+                        buildStage=report["stage"], repairRound=task["repair_rounds"],
+                        artifactSha256=digest(package) if package is not None else None,
+                        errorCode=report.get("code"))
+            return self._result(task)
+
+    def export_build(self, task_id: str) -> Path:
+        """Materialize the retained built snapshot at a fixed trusted path."""
+        with self._transaction() as db:
+            task = self._task(db, task_id)
+            need(task["status"] == "built", "BUILD_NOT_AVAILABLE")
+            row = db.execute("SELECT package, report_json FROM builds WHERE task_id = ? AND package IS NOT NULL ORDER BY seq DESC LIMIT 1", (task_id,)).fetchone()
+            need(row is not None, "BUILD_NOT_AVAILABLE")
+            payload = bytes(row["package"])
+            report = json.loads(row["report_json"])
+            need(digest(payload) == report["artifact"]["sha256"], "RESOURCE_HASH_MISMATCH")
+            destination = self.root / "artifacts" / (task_id + ".zip")
+            no_links(destination)
+            destination.parent.mkdir(exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".build-", dir=destination.parent)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, destination)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+            return destination
 
     def sweep(self, *, recover: bool = False) -> list[dict[str, Any]]:
         """Trusted supervisor tick; recover only after the previous worker exited."""
@@ -275,7 +382,8 @@ class TaskStore:
 
     def record_failure(self, task_id: str, stage: str, code: str, *, path: str | None = None,
                        check: str | None = None) -> dict[str, Any]:
-        need(stage in {"generating", "validating"} and isinstance(code, str) and CODE.fullmatch(code), "INVALID_FAILURE")
+        need(stage in {"generating", "validating", "manifest", "building", "testing"}
+             and isinstance(code, str) and CODE.fullmatch(code), "INVALID_FAILURE")
         need(check is None or (isinstance(check, str) and re.fullmatch(r"[a-z0-9_]{1,64}", check)), "INVALID_FAILURE")
         with self._transaction() as db:
             task = self._task(db, task_id)
