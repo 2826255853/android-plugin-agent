@@ -2,6 +2,9 @@
 
 ## 2026-11-17
 
+- **变更：**完成阶段 2.5：新增 `scripts/verify-stage25.py` 串行运行阶段 2.1–2.4 回归，并对临时任务执行规格版本/摘要、模板版本、构建快照及 ZIP 摘要的持久化追溯检查；新增 `阶段2.5阶段回归.md`，同步 `计划文档.md` 与 `项目介绍.md`。
+- **原因/影响：**为 AT-01/02/03/08、构建失败/重复修复/超时/费用/包校验和任务产物关联提供单一可重复验收入口；临时数据自动清理，构建仍保持 `deliverable: false`。
+- **验证：**`python scripts/verify-stage25.py` 在 Windows / Python 3.15 / Node.js 24 / Microsoft Edge 通过阶段 2.1（5 项）、2.2（29 项）、2.3（30 项）、2.5 追溯断言及阶段 2.4 浏览器验收；`python -m py_compile scripts/verify-stage25.py` 与 `git diff --check` 通过。未运行 Android 构建或模拟器/真机测试，因为本次仅修改桌面回归脚本和 Markdown 文档，未改 Android 源码或构建配置。
 - **变更：**完成阶段 2.4：新增 `scripts/browser_preview.py`，只接受阶段 2.3 严格校验的 ZIP、仅绑定 loopback 提供清单资源，并在内存注入浏览器模拟桥；插件页通过 localhost 别名源与 127.0.0.1 控制页隔离；新增 `desktop-generator/browser-preview/` 控制条、适配器和样式，以及 `scripts/verify-stage24.mjs` Edge 端到端验收。Quick Notes 在读取权限拒绝/撤销时清空已显示列表。新增 `阶段2.4浏览器预览.md`，同步阶段计划、项目说明及阶段 2.3 的后续状态。
 - **原因/影响：**提供实际生成包页面和基本交互预览，数据读写各自默认拒绝并由用户显式模拟授权；浏览器数据隔离在当前源 localStorage，设备能力不误判通过，成功构建与预览仍无交付资格。当前预览仅适用于固定 Quick Notes 模板，不作为任意不可信代码的隔离环境。
 - **验证：**`node scripts/verify-stage24.mjs <built-package.zip>` 在 Windows / Node.js 24 / Microsoft Edge 通过预览横幅、插件无法访问控制页、默认拒绝、分项授权、笔记保存与读取、撤销清空和包外资源拒绝；`python scripts/verify-stage21.py`（5 项）、`python scripts/verify-stage22.py`（29 项）、`python scripts/verify-stage23.py`（30 项）通过；Python/Node 语法检查、`git diff --check` 通过；在 `android-app/` 使用 JDK 17 执行 `:app:assembleDebug` 成功（35 项任务均为最新）。未运行模拟器或真机交互测试，原因是本次交付为桌面浏览器预览；未调用真实模型或设备能力。
