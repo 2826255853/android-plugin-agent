@@ -1,5 +1,11 @@
 # 变更记录
 
+## 2026-11-18
+
+- **变更：**完成阶段 3.1：新增 `scripts/plugin_delivery.py`，从 SQLite 成功构建快照导出 ZIP/核对单，复核任务、规格、模板、固定检查、身份/版本与源码/包摘要；提供复制后复核及显式设备选择、默认拒绝真机、设备端 SHA-256 校验的 ADB 传输。新增 `scripts/verify-stage31.py` 的 15 项交付检查和 `scripts/verify-stage31.mjs` 的实际生成包模拟器选包验收；新增 `阶段3.1交付与导入.md`，同步计划、项目说明及 `android-app/验证记录.md`。
+- **原因/影响：**补齐电脑到 Android 的可操作本地开发导入流程，拒绝失败任务、异包/篡改、错误目标和摘要不一致，保留现有文件及已安装插件；导出/传输不自动安装、授权或授予发布资格，任务仍为 `built / deliverable: false`。不新增依赖或 Android 权限，不更改协议和宿主实现。
+- **验证：**`python scripts/verify-stage31.py --android --serial emulator-5554` 最终通过 15 项桌面检查及 Android API 37 / WebView 145 的真实生成、导出、传输/设备摘要、系统选包安装、安装后 ID/版本/全部源码摘要、默认拒绝/分项授权、笔记读写/重启保持、损坏包拒绝及清理；初轮选择器/列表脚本超时的原因与修正记录在 Android 验证记录。`python scripts/verify-stage25.py` 的 5/29/30 项回归、产物追溯和 Edge 预览通过；在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug` 成功（35 项最新，既有 SDK XML 提示）；Python 编译、Node 语法及 `git diff --check` 通过。未重跑 Lint（无 Android 源码/构建变更），未做可选真机、最低 API/旧 WebView、USB/MTP、真实模型或阶段 3.2–3.4 验收。
+
 ## 2026-11-17
 
 - **变更：**完成阶段 2.5：新增 `scripts/verify-stage25.py` 串行运行阶段 2.1–2.4 回归，并对临时任务执行规格版本/摘要、模板版本、构建快照及 ZIP 摘要的持久化追溯检查；新增 `阶段2.5阶段回归.md`，同步 `计划文档.md` 与 `项目介绍.md`。
