@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "requestId": "44444444-4444-4444-8444-444444444444",
+  "inReplyTo": "55555555-5555-4555-8555-555555555555",
+  "createdAt": "2026-11-19T12:00:06Z",
+  "operation": "pair.confirm",
+  "deviceId": "android-emulator-37",
+  "approved": false,
+  "errorCode": "PAIRING_REJECTED"
+}

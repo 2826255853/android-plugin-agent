@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:android-plugin-agent:message:1",
+  "title": "Android to desktop message and pairing protocol v1",
+  "oneOf": [
+    { "$ref": "#/$defs/pairRequest" },
+    { "$ref": "#/$defs/pairConfirmApproved" },
+    { "$ref": "#/$defs/pairConfirmRejected" },
+    { "$ref": "#/$defs/pairRevoke" },
+    { "$ref": "#/$defs/pairRevoked" },
+    { "$ref": "#/$defs/messageSend" },
+    { "$ref": "#/$defs/messageReceipt" },
+    { "$ref": "#/$defs/statusQuery" },
+    { "$ref": "#/$defs/statusResponse" },
+    { "$ref": "#/$defs/errorResponse" }
+  ],
+  "$defs": {
+    "schemaVersion": { "const": 1 },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "credentialId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "commonRequest": {
+      "type": "object",
+      "required": ["schemaVersion", "requestId", "createdAt", "operation"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "type": "string" }
+      }
+    },
+    "commonResponse": {
+      "type": "object",
+      "required": ["schemaVersion", "requestId", "inReplyTo", "createdAt", "operation"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "inReplyTo": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "type": "string" }
+      }
+    },
+    "pairRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "createdAt", "operation", "deviceId", "deviceName", "clientKeyFingerprint", "pairingCode", "expiresAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "pair.request" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "deviceName": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\u0000-\\u001F\\u007F]+$" },
+        "clientKeyFingerprint": { "$ref": "#/$defs/sha256" },
+        "pairingCode": { "type": "string", "pattern": "^[0-9]{6}$" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "pairConfirmApproved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "inReplyTo", "createdAt", "operation", "deviceId", "approved", "serverCertificateFingerprint", "credentialId", "credential", "credentialExpiresAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "inReplyTo": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "pair.confirm" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "approved": { "const": true },
+        "serverCertificateFingerprint": { "$ref": "#/$defs/sha256" },
+        "credentialId": { "$ref": "#/$defs/credentialId" },
+        "credential": { "type": "string", "minLength": 43, "maxLength": 512, "pattern": "^[A-Za-z0-9_-]+$" },
+        "credentialExpiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "pairConfirmRejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "inReplyTo", "createdAt", "operation", "deviceId", "approved", "errorCode"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "inReplyTo": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "pair.confirm" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "approved": { "const": false },
+        "errorCode": { "enum": ["PAIRING_EXPIRED", "PAIRING_REJECTED", "SERVER_IDENTITY_MISMATCH", "PAIRING_RATE_LIMITED"] }
+      }
+    },
+    "pairRevoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "createdAt", "operation", "deviceId", "credentialId", "reason"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "pair.revoke" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "credentialId": { "$ref": "#/$defs/credentialId" },
+        "reason": { "enum": ["user_requested", "credential_compromised", "device_removed"] }
+      }
+    },
+    "pairRevoked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "inReplyTo", "createdAt", "operation", "deviceId", "credentialId", "revokedAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "inReplyTo": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "pair.revoked" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "credentialId": { "$ref": "#/$defs/credentialId" },
+        "revokedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["specVersion", "decision", "confirmedAt"],
+      "properties": {
+        "specVersion": { "type": "integer", "minimum": 1 },
+        "decision": { "enum": ["confirmed", "rejected"] },
+        "confirmedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "messageSend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "createdAt", "operation", "deviceId", "credentialId", "messageId", "projectId", "sequence", "messageType", "body", "bodySha256"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "message.send" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "credentialId": { "$ref": "#/$defs/credentialId" },
+        "messageId": { "$ref": "#/$defs/uuid" },
+        "projectId": { "$ref": "#/$defs/projectId" },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "messageType": { "enum": ["user.message", "user.answer", "user.confirmation"] },
+        "body": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "bodySha256": { "$ref": "#/$defs/sha256" },
+        "specVersion": { "type": "integer", "minimum": 1 },
+        "confirmation": { "$ref": "#/$defs/confirmation" }
+      }
+    },
+    "messageReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "inReplyTo", "createdAt", "operation", "deviceId", "messageId", "projectId", "sequence", "status", "receivedAt", "retryable"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "inReplyTo": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "message.receipt" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "messageId": { "$ref": "#/$defs/uuid" },
+        "projectId": { "$ref": "#/$defs/projectId" },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "status": { "enum": ["received", "duplicate"] },
+        "receivedAt": { "$ref": "#/$defs/timestamp" },
+        "retryable": { "const": false }
+      }
+    },
+    "statusQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "createdAt", "operation", "deviceId", "credentialId", "messageId"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "status.query" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "credentialId": { "$ref": "#/$defs/credentialId" },
+        "messageId": { "$ref": "#/$defs/uuid" }
+      }
+    },
+    "statusResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "inReplyTo", "createdAt", "operation", "deviceId", "messageId", "projectId", "sequence", "status", "updatedAt", "retryable"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "inReplyTo": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "status.response" },
+        "deviceId": { "$ref": "#/$defs/deviceId" },
+        "messageId": { "$ref": "#/$defs/uuid" },
+        "projectId": { "$ref": "#/$defs/projectId" },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "status": { "enum": ["queued", "received", "failed_retryable", "rejected", "revoked"] },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "errorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "inReplyTo", "createdAt", "operation", "error"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "requestId": { "$ref": "#/$defs/uuid" },
+        "inReplyTo": { "$ref": "#/$defs/uuid" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "operation": { "const": "error" },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "retryable"],
+          "properties": {
+            "code": {
+              "enum": ["INVALID_REQUEST", "UNSUPPORTED_SCHEMA_VERSION", "AUTH_REQUIRED", "PAIRING_REQUIRED", "PAIRING_EXPIRED", "PAIRING_REJECTED", "SERVER_IDENTITY_MISMATCH", "PAIRING_RATE_LIMITED", "DEVICE_REVOKED", "MESSAGE_ID_CONFLICT", "MESSAGE_SEQUENCE_CONFLICT", "MESSAGE_NOT_FOUND", "PAYLOAD_TOO_LARGE", "RATE_LIMITED", "RETRY_WINDOW_EXPIRED", "INTERNAL_ERROR"]
+            },
+            "retryable": { "type": "boolean" },
+            "retryAfterSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
+          }
+        }
+      }
+    }
+  }
+}

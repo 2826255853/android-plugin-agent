@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "requestId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "createdAt": "2026-11-19T12:03:00Z",
+  "operation": "status.query",
+  "deviceId": "android-emulator-37",
+  "credentialId": "33333333-3333-4333-8333-333333333333",
+  "messageId": "99999999-9999-4999-8999-999999999999"
+}

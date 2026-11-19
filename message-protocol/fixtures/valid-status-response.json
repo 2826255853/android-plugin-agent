@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "requestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "inReplyTo": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "createdAt": "2026-11-19T12:03:01Z",
+  "operation": "status.response",
+  "deviceId": "android-emulator-37",
+  "messageId": "99999999-9999-4999-8999-999999999999",
+  "projectId": "quick-notes",
+  "sequence": 1,
+  "status": "received",
+  "updatedAt": "2026-11-19T12:02:01Z",
+  "retryable": false
+}

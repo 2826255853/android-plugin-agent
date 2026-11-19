@@ -1,0 +1,8 @@
+{
+  "invalid-unknown-field.json": "INVALID_REQUEST",
+  "invalid-duplicate-json-key.json": "INVALID_REQUEST",
+  "invalid-project-id.json": "INVALID_REQUEST",
+  "invalid-message-hash.json": "INVALID_REQUEST",
+  "invalid-empty-body.json": "INVALID_REQUEST",
+  "invalid-pair-code.json": "INVALID_REQUEST"
+}

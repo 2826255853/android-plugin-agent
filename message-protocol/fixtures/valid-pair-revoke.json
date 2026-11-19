@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "requestId": "66666666-6666-4666-8666-666666666666",
+  "createdAt": "2026-11-19T12:01:00Z",
+  "operation": "pair.revoke",
+  "deviceId": "android-emulator-37",
+  "credentialId": "33333333-3333-4333-8333-333333333333",
+  "reason": "user_requested"
+}

@@ -2,6 +2,20 @@
 
 ## 2026-11-19
 
+- **变更：**完成阶段 A.1 的 Android instrumentation 设备验证；启动 `Medium_Phone_API_37.0` 模拟器并通过 `Stage15Instrumentation` 执行原生回归，确认新增消息协议夹具用例接入现有测试入口。
+- **原因/影响：**补充 Android 端实际运行证据，确认 Kotlin 解析器能在目标模拟器中读取仓库共用夹具并执行合法/非法消息契约校验。
+- **验证：**`python scripts/verify-stage15.py --serial emulator-5554` 通过，输出 `STAGE15 PASSED: 61 passed, 0 failed`；环境和覆盖边界已记录到 `android-app/验证记录.md`。未进行真机、API 23、旧 WebView或网络接收服务验证。
+
+- **变更：**完成后续端到端规划阶段 A.1；新增 `message-protocol/` 下的消息与配对契约、Draft 2020-12 Schema、合法/非法夹具和稳定错误码；新增 Python 严格解析器与回归入口，Android 新增 `MessageProtocol.kt` 并让 instrumentation 读取同一组夹具。
+- **原因/影响：**固化配对申请/确认/撤销、消息发送、接收回执、状态查询和错误响应的版本化结构，明确 TLS 1.3、证书指纹、凭据生命周期、24 小时重试窗口、幂等规则、限长和未知字段处理。A.1 不启动接收服务、任务、LLM 或插件生成。
+- **验证：**`python scripts/verify-message-protocol.py` 通过（10 个合法、6 个非法和 4 个边界用例）；`python -m py_compile scripts/message_protocol.py scripts/verify-message-protocol.py` 通过；在 `android-app/` 执行 `./gradlew.bat :app:assembleDebug` 和 `./gradlew.bat :app:assembleAndroidTest` 均成功。当前未运行模拟器 instrumentation，`adb devices` 未发现在线设备；未进行真机测试。
+
+- **变更：**细化 `后续端到端开发规划.md` 的阶段 A，拆为契约与配对、安全接收服务、持久收件箱、Android 会话与发送队列、恢复与端到端验收五步，并明确每步退出条件及阶段边界。
+- **原因/影响：**为手机到电脑的本机消息链提供可按序实施的工作包和验收要求，明确阶段 A 不启动 LLM 或插件生成，并将阶段 B 的入口设为阶段 A 消息链验收完成。
+- **验证：**对照 Android 宿主和现有桌面规格/任务/交付实现检查规划边界；`git diff --check` 通过。仅修改规划文档和变更记录，未运行 Android 构建、自动化测试或设备验证。
+
+## 2026-11-19
+
 - **变更：**新增 `后续端到端开发规划.md`，按当前 Android 宿主、电脑端生成工具和阶段 3.4 模拟器证据，规划手机对话/电脑配对、LLM 规格澄清与受控生成、插件构建验证、候选包回传、Android 导入及后续迭代。
 - **原因/影响：**明确尚未实现的手机到电脑指令通道、真实 LLM、通用受控生成和自动回传，并给出分阶段目标、状态契约、安全边界及验收条件，作为后续功能开发路线。
 - **验证：**人工对照 `项目介绍.md`、`计划文档.md`、`插件协议草案.md`、阶段 3.1 与阶段 3.4 文档核实当前能力和未实现范围；`git diff --check` 通过。仅新增规划文档，未运行 Android 构建、设备测试或模型调用。

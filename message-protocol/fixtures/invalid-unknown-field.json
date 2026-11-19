@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "createdAt": "2026-11-19T12:00:00Z",
+  "operation": "pair.request",
+  "deviceId": "android-emulator-37",
+  "deviceName": "开发模拟器",
+  "clientKeyFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pairingCode": "482913",
+  "expiresAt": "2026-11-19T12:10:00Z",
+  "unexpected": true
+}

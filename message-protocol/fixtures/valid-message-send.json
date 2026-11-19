@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "requestId": "88888888-8888-4888-8888-888888888888",
+  "createdAt": "2026-11-19T12:02:00Z",
+  "operation": "message.send",
+  "deviceId": "android-emulator-37",
+  "credentialId": "33333333-3333-4333-8333-333333333333",
+  "messageId": "99999999-9999-4999-8999-999999999999",
+  "projectId": "quick-notes",
+  "sequence": 1,
+  "messageType": "user.message",
+  "body": "建立一个快速笔记工具",
+  "bodySha256": "925f5fa122662ae8076319601dd9995a15685c1f9323c425d36faddaeeffe0a3"
+}

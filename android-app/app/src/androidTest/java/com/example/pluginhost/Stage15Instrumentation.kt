@@ -40,6 +40,7 @@ class Stage15Instrumentation : Instrumentation() {
             test("record-count-and-pagination") { verifyCountAndPages() }
             test("storage-byte-and-page-boundary") { verifyStorageBytes() }
             test("read-page-byte-at-and-over") { verifyPageBytes() }
+            test("message-protocol-fixtures") { verifyMessageProtocolFixtures() }
         } catch (failure: Throwable) {
             failures += "runner: ${failure.javaClass.simpleName}: ${failure.message}"
         } finally {
@@ -61,6 +62,49 @@ class Stage15Instrumentation : Instrumentation() {
             failures += "$name: ${failure.javaClass.simpleName}: ${failure.message}"
         }
     }
+
+    private fun verifyMessageProtocolFixtures() {
+        val valid = listOf(
+            "valid-pair-request.json",
+            "valid-pair-confirm.json",
+            "valid-pair-rejected.json",
+            "valid-pair-revoke.json",
+            "valid-pair-revoked.json",
+            "valid-message-send.json",
+            "valid-message-receipt.json",
+            "valid-status-query.json",
+            "valid-status-response.json",
+            "valid-error.json",
+        )
+        valid.forEach { name -> MessageProtocol.parse(assetText("fixtures/$name")) }
+        val invalid = mapOf(
+            "invalid-unknown-field.json" to "INVALID_REQUEST",
+            "invalid-duplicate-json-key.json" to "INVALID_REQUEST",
+            "invalid-project-id.json" to "INVALID_REQUEST",
+            "invalid-message-hash.json" to "INVALID_REQUEST",
+            "invalid-empty-body.json" to "INVALID_REQUEST",
+            "invalid-pair-code.json" to "INVALID_REQUEST",
+        )
+        invalid.forEach { (name, expected) ->
+            try {
+                MessageProtocol.parse(assetText("fixtures/$name"))
+                error("fixture accepted: $name")
+            } catch (failure: MessageProtocol.ProtocolException) {
+                check(failure.code == expected) { "$name returned ${failure.code}" }
+            }
+        }
+        val tooLong = JSONObject(assetText("fixtures/valid-message-send.json"))
+            .put("body", "x".repeat(MessageProtocol.MAX_BODY_CHARS + 1))
+            .put("bodySha256", "0".repeat(64))
+        try {
+            MessageProtocol.parse(tooLong.toString())
+            error("oversized body accepted")
+        } catch (failure: MessageProtocol.ProtocolException) {
+            check(failure.code == "INVALID_REQUEST") { "oversized body returned ${failure.code}" }
+        }
+    }
+
+    private fun assetText(path: String): String = context.assets.open(path).bufferedReader().use { it.readText() }
 
     private fun fixture(name: String): File = File(sandbox.filesDir, "candidate.zip").also { file ->
         context.assets.open("stage15/$name").use { input -> file.outputStream().use { input.copyTo(it) } }

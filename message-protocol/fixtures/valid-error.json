@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "requestId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  "inReplyTo": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  "createdAt": "2026-11-19T12:04:00Z",
+  "operation": "error",
+  "error": {
+    "code": "RATE_LIMITED",
+    "retryable": true,
+    "retryAfterSeconds": 30
+  }
+}
