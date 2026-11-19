@@ -33,6 +33,9 @@ class Stage15Instrumentation : Instrumentation() {
             val upgrades = matrix.getJSONObject("upgrades")
             for (name in upgrades.keys()) test(name) { verifyUpgrade(name, upgrades.getString(name)) }
             test("interrupted-install") { verifyRecovery() }
+            test("rollback-retains-data-and-rejects-stale-update") { verifyRollback() }
+            test("rollback-rejects-damaged-snapshot") { verifyRollbackRejection("upgrade-same.zip", damage = true) }
+            test("rollback-unavailable-after-compatible-schema-change") { verifyRollbackRejection("upgrade-optional.zip") }
             test("record-byte-boundary") { verifyRecordBytes() }
             test("record-count-and-pagination") { verifyCountAndPages() }
             test("storage-byte-and-page-boundary") { verifyStorageBytes() }
@@ -113,6 +116,42 @@ class Stage15Instrumentation : Instrumentation() {
         check(LocalPluginStore(sandbox).list().single().version == plugin.version)
         check(!backup.exists() && !File(backup.parentFile, ".stage-12345").exists())
         check(!File(backup.parentFile, "incoming-12345.zip").exists())
+    }
+
+    private fun verifyRollback() {
+        val store = LocalPluginStore(sandbox)
+        val baseline = install(store, "upgrade-base.zip")
+        val original = fingerprint()
+        val stale = store.inspect(sandbox, Uri.fromFile(fixture("upgrade-optional.zip")))
+        val upgraded = install(store, "upgrade-same.zip")
+        expectImport("INSTALLATION_CHANGED") { store.install(stale) }
+        check(upgraded.rollbackVersion == baseline.version)
+        val backup = File(upgraded.directory.parentFile, ".backup-${upgraded.id}-12345")
+        check(upgraded.directory.renameTo(backup))  // Interrupted switch before publishing a rollback.
+        val reopened = LocalPluginStore(sandbox)
+        val current = reopened.list().single()
+        check(current.version == upgraded.version && current.rollbackVersion == baseline.version)
+        PluginDataStore(sandbox).use { data ->
+            data.insert(current.id, "notes", JSONObject().put("title", "Fictional note saved after update"))
+            val restored = reopened.rollback(current)
+            check(restored.version == baseline.version && restored.rollbackVersion == null)
+            check(original == fingerprint())
+            check(data.read(current.id, "notes", 0, 100).records.length() == 1)
+        }
+    }
+
+    private fun verifyRollbackRejection(upgrade: String, damage: Boolean = false) {
+        val store = LocalPluginStore(sandbox)
+        install(store, "upgrade-base.zip")
+        val upgraded = install(store, upgrade)
+        if (damage) {
+            check(upgraded.rollbackVersion != null)
+            File(upgraded.directory, ".previous/${upgraded.entry}").writeText("Fictional damaged snapshot")
+        }
+        val before = fingerprint()
+        expectImport("ROLLBACK_UNAVAILABLE") { store.rollback(upgraded) }
+        check(store.list().single().rollbackVersion == null)
+        check(before == fingerprint())
     }
 
     private fun record(bytes: Int): JSONObject = JSONObject().put("value", "x".repeat(bytes - 12)).also {

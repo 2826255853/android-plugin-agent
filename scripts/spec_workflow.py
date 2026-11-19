@@ -7,6 +7,7 @@ turns missing decisions into explicit clarification questions.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,9 @@ SUPPORTED_CAPABILITIES = {
     "ui.toast": "请求宿主显示简短提示",
 }
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+PROJECT_ID = re.compile(r"[a-z][a-z0-9-]{2,63}")
+SHA256 = re.compile(r"[a-f0-9]{64}")
+SPEC_METADATA = {"projectId", "schemaVersion", "version", "status", "revision"}
 
 
 class SpecError(ValueError):
@@ -84,11 +88,19 @@ def unsupported_requests(spec: dict[str, Any]) -> list[dict[str, str]]:
 
 def validate_spec(spec: dict[str, Any], *, require_confirmable: bool = False) -> None:
     _need(isinstance(spec, dict), "spec must be an object")
-    _only_keys(spec, {"schemaVersion", "projectId", "version", "status", "title", "goal", "storesData", "pages", "collections", "workflows", "permissions", "acceptanceCriteria", "unsupportedItems"}, "spec")
+    _only_keys(spec, SPEC_METADATA | {"title", "goal", "storesData", "pages", "collections", "workflows", "permissions", "acceptanceCriteria", "unsupportedItems"}, "spec")
     _need(spec.get("schemaVersion") == 1, "schemaVersion must be 1")
-    _need(isinstance(spec.get("projectId"), str) and re.fullmatch(r"[a-z][a-z0-9-]{2,63}", spec["projectId"]) is not None, "invalid projectId")
+    _need(isinstance(spec.get("projectId"), str) and PROJECT_ID.fullmatch(spec["projectId"]) is not None, "invalid projectId")
     _need(isinstance(spec.get("version"), int) and not isinstance(spec["version"], bool) and spec["version"] > 0, "version must be a positive integer")
     _need(spec.get("status") in {"draft", "confirmed"}, "status must be draft or confirmed")
+    if "revision" in spec:
+        revision = spec["revision"]
+        _need(isinstance(revision, dict) and revision.keys() == {"baseVersion", "baseSpecSha256"},
+              "invalid revision metadata")
+        _need(type(revision["baseVersion"]) is int and 0 < revision["baseVersion"] < spec["version"],
+              "invalid revision base version")
+        _need(isinstance(revision["baseSpecSha256"], str) and SHA256.fullmatch(revision["baseSpecSha256"]),
+              "invalid revision base digest")
     _need(isinstance(spec.get("title"), str) and 1 <= len(spec["title"].strip()) <= 120, "title must contain 1..120 characters")
     _need(isinstance(spec.get("goal"), str), "goal must be a string")
     _need(isinstance(spec.get("storesData"), bool) or spec.get("storesData") is None, "storesData must be true, false, or null")
@@ -150,13 +162,77 @@ def load_json(path: Path) -> dict[str, Any]:
         raise SpecError(f"cannot read JSON spec: {exc}") from exc
 
 
-def save_confirmed(spec: dict[str, Any], store: Path) -> Path:
+def _latest_version(project_dir: Path) -> int:
+    return max((int(path.stem[1:]) for path in project_dir.glob("v*.json")
+                if re.fullmatch(r"v[1-9][0-9]*", path.stem)), default=0)
+
+
+def _confirmed_at(store: Path, project_id: str, version: int) -> dict[str, Any]:
+    _need(PROJECT_ID.fullmatch(project_id) is not None and version > 0, "invalid project or base version")
+    spec = load_json(store / project_id / f"v{version}.json")
+    validate_spec(spec, require_confirmable=True)
+    _need(spec["status"] == "confirmed" and spec["projectId"] == project_id and spec["version"] == version,
+          "confirmed specification does not match the requested project and version")
+    return spec
+
+
+def _spec_digest(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def revise(store: Path, project_id: str, base_version: int) -> dict[str, Any]:
+    base = _confirmed_at(store, project_id, base_version)
+    return {**base, "version": _latest_version(store / project_id) + 1, "status": "draft",
+            "revision": {"baseVersion": base_version, "baseSpecSha256": _spec_digest(base)}}
+
+
+def _changes(reference: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{"field": key, "before": reference[key], "after": draft[key]}
+            for key in sorted(draft.keys() - SPEC_METADATA)
+            if _spec_digest(reference[key]) != _spec_digest(draft[key])]
+
+
+def review_spec(spec: dict[str, Any], store: Path) -> dict[str, Any]:
+    validate_spec(spec)
+    result = {"questions": clarification_questions(spec), "unsupported": unsupported_requests(spec)}
+    if "revision" not in spec:
+        return result
+    _need(spec["status"] == "draft", "only revision drafts can be reviewed")
+    project_id = spec["projectId"]
+    latest_version = _latest_version(store / project_id)
+    _need(spec["version"] == latest_version + 1, f"next version must be {latest_version + 1}")
+    revision = spec["revision"]
+    base = _confirmed_at(store, project_id, revision["baseVersion"])
+    _need(revision["baseSpecSha256"] == _spec_digest(base), "revision base has changed")
+    latest = base if base["version"] == latest_version else _confirmed_at(store, project_id, latest_version)
+    result.update(projectId=project_id, version=spec["version"], baseVersion=base["version"],
+                  baseChanges=_changes(base, spec), latestVersion=latest_version,
+                  changes=_changes(latest, spec), reviewSha256=None)
+    if not result["changes"]:
+        result["questions"].append({"field": "changes", "question": "相对于当前确认版本，需要修改哪些内容？"})
+    try:
+        validate_spec(spec, require_confirmable=True)
+    except SpecError:
+        pass  # The questions and capability explanations above describe missing answers.
+    else:
+        if not result["questions"]:
+            result["reviewSha256"] = _spec_digest({"draft": spec, "latestSpecSha256": _spec_digest(latest)})
+    return result
+
+
+def save_confirmed(spec: dict[str, Any], store: Path, *, review_sha256: str | None = None) -> Path:
     validate_spec(spec, require_confirmable=True)
     _need(spec["status"] == "draft", "only drafts can be confirmed")
+    if "revision" in spec:
+        review = review_spec(spec, store)
+        _need(review_sha256 is not None and review_sha256 == review["reviewSha256"],
+              "review this revision and confirm its current reviewSha256")
+    else:
+        _need(review_sha256 is None, "review digest is only used for revision drafts")
     project_dir = store / spec["projectId"]
     project_dir.mkdir(parents=True, exist_ok=True)
-    versions = [int(p.stem[1:]) for p in project_dir.glob("v*.json") if re.fullmatch(r"v[1-9][0-9]*", p.stem)]
-    expected = max(versions, default=0) + 1
+    expected = _latest_version(project_dir) + 1
     _need(spec["version"] == expected, f"next version must be {expected}")
     destination = project_dir / f"v{expected}.json"
     _need(not destination.exists(), "confirmed version already exists")
@@ -184,21 +260,32 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     review = sub.add_parser("review", help="validate a draft and print clarification questions")
     review.add_argument("spec", type=Path)
+    revise_parser = sub.add_parser("revise", help="start a new draft from a confirmed version")
+    revise_parser.add_argument("project_id")
+    revise_parser.add_argument("base_version", type=int)
+    revise_parser.add_argument("--output", type=Path, required=True)
     confirm = sub.add_parser("confirm", help="save a confirmable draft as an immutable version")
     confirm.add_argument("spec", type=Path)
-    confirm.add_argument("--store", type=Path, default=Path("desktop-spec/projects"))
+    confirm.add_argument("--review-sha256")
+    for command in (review, revise_parser, confirm):
+        command.add_argument("--store", type=Path, default=Path("desktop-spec/projects"))
     args = parser.parse_args()
     try:
+        if args.command == "revise":
+            draft = revise(args.store, args.project_id, args.base_version)
+            with args.output.open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(draft, ensure_ascii=False, indent=2) + "\n")
+            print(args.output.as_posix())
+            return 0
         spec = load_json(args.spec)
-        validate_spec(spec)
         if args.command == "review":
-            result = {"questions": clarification_questions(spec), "unsupported": unsupported_requests(spec)}
+            result = review_spec(spec, args.store)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
-        path = save_confirmed(spec, args.store)
+        path = save_confirmed(spec, args.store, review_sha256=args.review_sha256)
         print(path.as_posix())
         return 0
-    except SpecError as exc:
+    except (ValueError, OSError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
 

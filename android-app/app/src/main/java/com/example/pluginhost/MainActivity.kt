@@ -32,6 +32,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,7 +63,7 @@ class MainActivity : ComponentActivity() {
     private var bridgeSupported by mutableStateOf(true)
     private var grantedPluginCapabilities by mutableStateOf<Set<String>>(emptySet())
     private var pluginAccessSession = PluginAccessSession()
-    private val pluginStore by lazy { LocalPluginStore(this) }
+    private val pluginStore by lazy { LocalPluginStore.applicationStore(this) }
     private val pluginDataStore by lazy { PluginDataStore(this) }
     private val pluginBridges = WeakHashMap<WebView, InstalledPluginBridge>()
     private val io = Executors.newSingleThreadExecutor()
@@ -99,6 +100,8 @@ class MainActivity : ComponentActivity() {
                 val installed = remember { mutableStateListOf<LocalPluginStore.Installed>() }
                 var packageStatus by remember { mutableStateOf("") }
                 var candidate by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
+                var packageBusy by remember { mutableStateOf(false) }
+                var rollbackTarget by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var activePlugin by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var removeTarget by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var deletePluginData by remember { mutableStateOf(false) }
@@ -116,6 +119,7 @@ class MainActivity : ComponentActivity() {
                 BackHandler(enabled = activePlugin != null) { closePlugin() }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     if (uri != null) {
+                        packageBusy = true
                         packageStatus = "正在校验插件包…"
                         io.execute {
                             try {
@@ -133,16 +137,21 @@ class MainActivity : ComponentActivity() {
                                                     installed.removeAll { it.id == result.id }
                                                     installed.add(result)
                                                     candidate = null
+                                                    packageBusy = false
                                                     packageStatus = "安装完成：${result.name} ${result.version}"
                                                 }
                                             } catch (e: LocalPluginStore.ImportFailure) {
-                                                runOnUiThread { packageStatus = importError(e.code); candidate = null }
+                                                runOnUiThread {
+                                                    packageStatus = importError(e.code)
+                                                    candidate = null
+                                                    packageBusy = false
+                                                }
                                             }
                                         }
-                                    }
+                                    } else packageBusy = false
                                 }
                             } catch (e: LocalPluginStore.ImportFailure) {
-                                runOnUiThread { packageStatus = importError(e.code) }
+                                runOnUiThread { packageStatus = importError(e.code); packageBusy = false }
                             }
                         }
                     }
@@ -210,9 +219,9 @@ class MainActivity : ComponentActivity() {
                     Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
                         Row(modifier = Modifier.fillMaxWidth()) {
                             Text("本地插件", modifier = Modifier.padding(8.dp).weight(1f))
-                        Button(onClick = {
-                            picker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
-                        }) { Text("导入 ZIP") }
+                            Button(enabled = !packageBusy, onClick = {
+                                picker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                            }) { Text("导入 ZIP") }
                         }
                         if (packageStatus.isNotEmpty()) {
                             Text(packageStatus, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
@@ -220,13 +229,22 @@ class MainActivity : ComponentActivity() {
                         if (installed.isEmpty()) Text("暂无已安装插件", modifier = Modifier.padding(horizontal = 12.dp))
                         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
                             items(installed, key = { it.id }) { plugin ->
-                                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text("${plugin.name}  ${plugin.version}")
-                                        Text(plugin.id)
+                                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                    Row(modifier = Modifier.fillMaxWidth()) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("${plugin.name}  ${plugin.version}")
+                                            Text(plugin.id)
+                                        }
+                                        Button(enabled = !packageBusy, onClick = { openPlugin(plugin) }) { Text("打开") }
+                                        Button(enabled = !packageBusy, onClick = {
+                                            deletePluginData = false; removeTarget = plugin
+                                        }) { Text("移除") }
                                     }
-                                    Button(onClick = { openPlugin(plugin) }) { Text("打开") }
-                                    Button(onClick = { deletePluginData = false; removeTarget = plugin }) { Text("移除") }
+                                    plugin.rollbackVersion?.let { version ->
+                                        TextButton(enabled = !packageBusy, onClick = { rollbackTarget = plugin }) {
+                                            Text("回退到 $version")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -274,23 +292,69 @@ class MainActivity : ComponentActivity() {
                     if (old != null) AlertDialog(
                         onDismissRequest = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" },
                         title = { Text("确认更新插件") },
-                        text = { Text("${checked.id}\n${old.version} → ${checked.version}\n数据模型兼容性检查已通过，现有插件将在切换成功后替换。") },
+                        text = {
+                            val rollbackInfo = if (pluginStore.canRollbackModel(old.dataModel, checked.dataModel)) {
+                                "更新后可回退到 ${old.version}。"
+                            } else {
+                                "数据结构发生变化，更新后无法回退到旧版。"
+                            }
+                            Text("${checked.id}\n${old.version} → ${checked.version}\n更新保留现有插件数据。$rollbackInfo")
+                        },
                         confirmButton = { Button(onClick = {
                             candidate = null; packageStatus = "正在安装更新…"
+                            packageBusy = true
                             io.execute {
                                 try {
                                     val result = pluginStore.install(checked)
                                     runOnUiThread {
                                         installed.removeAll { it.id == result.id }
                                         installed.add(result)
+                                        packageBusy = false
                                         packageStatus = "更新完成：${result.name} ${result.version}"
                                     }
                                 } catch (e: LocalPluginStore.ImportFailure) {
-                                    runOnUiThread { packageStatus = importError(e.code) }
+                                    runOnUiThread { packageStatus = importError(e.code); packageBusy = false }
                                 }
                             }
                         }) { Text("更新") } },
                         dismissButton = { Button(onClick = { pluginStore.discard(checked); candidate = null; packageStatus = "已取消更新" }) { Text("取消") } },
+                    )
+                }
+                rollbackTarget?.let { plugin ->
+                    AlertDialog(
+                        onDismissRequest = { rollbackTarget = null },
+                        title = { Text("确认回退插件") },
+                        text = {
+                            Text("${plugin.id}\n${plugin.version} → ${plugin.rollbackVersion}\n" +
+                                "替换当前安装资源，保留全部现有记录及页面存储，包括更新后新增的数据。")
+                        },
+                        confirmButton = {
+                            Button(onClick = {
+                                rollbackTarget = null
+                                packageBusy = true
+                                packageStatus = "正在回退插件…"
+                                io.execute {
+                                    try {
+                                        val result = pluginStore.rollback(plugin)
+                                        runOnUiThread {
+                                            installed.removeAll { it.id == result.id }
+                                            installed.add(result)
+                                            packageBusy = false
+                                            packageStatus = "回退完成：${result.name} ${result.version}"
+                                        }
+                                    } catch (e: LocalPluginStore.ImportFailure) {
+                                        val records = pluginStore.list()
+                                        runOnUiThread {
+                                            installed.clear()
+                                            installed.addAll(records)
+                                            packageBusy = false
+                                            packageStatus = "回退失败。${importError(e.code)}"
+                                        }
+                                    }
+                                }
+                            }) { Text("确认回退") }
+                        },
+                        dismissButton = { Button(onClick = { rollbackTarget = null }) { Text("取消") } },
                     )
                 }
                 removeTarget?.let { plugin ->
@@ -299,7 +363,7 @@ class MainActivity : ComponentActivity() {
                         title = { Text("移除插件？") },
                         text = {
                             Column {
-                                Text("将移除 ${plugin.name}（${plugin.id}）的安装资源。宿主笔记数据和页面来源存储默认保留，可在以后重新安装同一 ID 的插件时继续使用。")
+                                Text("将移除 ${plugin.name}（${plugin.id}）的安装资源及可回退版本。宿主笔记数据和页面来源存储默认保留，可在以后重新安装同一 ID 的插件时继续使用。")
                                 Row(
                                     modifier = Modifier.fillMaxWidth().toggleable(
                                         value = deletePluginData,
@@ -322,6 +386,7 @@ class MainActivity : ComponentActivity() {
                         confirmButton = {
                             Button(onClick = {
                                 removeTarget = null
+                                packageBusy = true
                                 packageStatus = "正在移除 ${plugin.name}…"
                                 val deleteData = deletePluginData
                                 io.execute {
@@ -332,6 +397,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }.getOrDefault(false)
                                     runOnUiThread {
+                                        packageBusy = false
                                         if (removed) {
                                             installed.removeAll { it.id == plugin.id }
                                             packageStatus = when {
@@ -391,6 +457,8 @@ class MainActivity : ComponentActivity() {
         "RESOURCE_HASH_MISMATCH" -> "插件资源摘要校验失败。"
         "RESOURCE_REFERENCE_INVALID" -> "插件页面引用了缺失或外部资源。"
         "PLUGIN_VERSION_NOT_NEWER" -> "已安装相同或更新版本，未覆盖现有插件。"
+        "INSTALLATION_CHANGED" -> "安装状态已变化，请重新选择。"
+        "ROLLBACK_UNAVAILABLE" -> "没有可用的上一版本，现有插件保持不变。"
         "DATA_MODEL_INCOMPATIBLE" -> "新版本的数据模型不兼容，现有插件保持不变。"
         else -> "插件导入失败（$code）。"
     }

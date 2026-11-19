@@ -31,20 +31,20 @@ internal class LocalPluginStore(context: Context) {
         val resources: List<String>,
         val capabilities: Set<String>,
         val dataModel: JSONObject,
+        val rollbackVersion: String? = null,
     )
     class ImportFailure(val code: String) : Exception(code)
 
     @Synchronized
     fun list(): List<Installed> {
         val records = root.listFiles().orEmpty().filter { it.isDirectory && isPluginId(it.name) }
-            .mapNotNull(::readInstalled).sortedBy { it.id }
-        val json = JSONArray().apply {
-            records.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("version", it.version)) }
-        }
-        if (prefs.getString("items", "[]") != json.toString()) prefs.edit().putString("items", json.toString()).commit()
+            .mapNotNull { readInstalled(it)?.withRollbackVersion() }.sortedBy { it.id }
+        val json = indexJson(records)
+        if (prefs.getString("items", "[]") != json) prefs.edit().putString("items", json).commit()
         return records
     }
 
+    @Synchronized
     fun inspect(context: Context, uri: Uri): Installed {
         val incoming = File(root, "incoming-${System.nanoTime()}.zip")
         try {
@@ -74,7 +74,7 @@ internal class LocalPluginStore(context: Context) {
                 parsed.capabilities, parsed.model,
             ).also {
                 incoming.deleteOnExit()
-                pending[incoming.name] = parsed
+                pending[incoming.name] = PendingImport(parsed, previous?.version)
             }
         } catch (failure: ImportFailure) {
             incoming.delete()
@@ -85,58 +85,102 @@ internal class LocalPluginStore(context: Context) {
         }
     }
 
-    private val pending = mutableMapOf<String, Package>()
+    private data class PendingImport(val pkg: Package, val expectedVersion: String?)
+    private val pending = mutableMapOf<String, PendingImport>()
 
     @Synchronized
     fun install(candidate: Installed): Installed {
-        val pkg = pending.remove(candidate.directory.name) ?: fail("PACKAGE_CORRUPT")
-        val stage = File(root, ".stage-${System.nanoTime()}")
-        val target = File(root, pkg.id)
-        // Include the plugin ID so startup recovery can restore this directory if the
-        // process dies after moving the active install but before switching the stage.
-        val backup = File(root, ".backup-${pkg.id}-${System.nanoTime()}")
+        val inspected = pending.remove(candidate.directory.name) ?: fail("PACKAGE_CORRUPT")
+        val pkg = inspected.pkg
         try {
-            if (!stage.mkdir()) fail("PACKAGE_CORRUPT")
-            ZipFile(candidate.directory).use { zip ->
-                for (entry in pkg.entries) {
-                    val out = File(stage, entry)
-                    if (!out.canonicalPath.startsWith(stage.canonicalPath + File.separator)) fail("PACKAGE_ENTRY_INVALID")
-                    out.parentFile?.mkdirs()
-                    zip.getInputStream(zip.getEntry(entry)).use { input ->
-                        FileOutputStream(out).use { output -> input.copyTo(output) }
+            val records = list()
+            val current = records.firstOrNull { it.id == pkg.id }
+            if (current?.version != inspected.expectedVersion) fail("INSTALLATION_CHANGED")
+            if (current != null) {
+                if (compareVersions(pkg.version, current.version) <= 0) fail("PLUGIN_VERSION_NOT_NEWER")
+                if (!compatibleModel(current, pkg.model)) fail("DATA_MODEL_INCOMPATIBLE")
+            }
+            return switchInstall(pkg.id, current, records) { stage ->
+                ZipFile(candidate.directory).use { zip ->
+                    for (entry in pkg.entries) {
+                        val out = File(stage, entry)
+                        if (!out.canonicalPath.startsWith(stage.canonicalPath + File.separator)) fail("PACKAGE_ENTRY_INVALID")
+                        out.parentFile?.mkdirs()
+                        zip.getInputStream(zip.getEntry(entry)).use { input ->
+                            FileOutputStream(out).use { output -> input.copyTo(output) }
+                        }
                     }
                 }
+                if (current != null && canRollbackModel(current.dataModel, pkg.model)) {
+                    copyResources(current, File(stage, PREVIOUS))
+                }
             }
-            val oldRecord = list().firstOrNull { it.id == pkg.id }
-            if (oldRecord != null && !oldRecord.directory.renameTo(backup)) fail("PACKAGE_CORRUPT")
-            if (!stage.renameTo(target)) {
-                if (backup.exists()) backup.renameTo(File(root, pkg.id))
+        } finally {
+            candidate.directory.delete()
+        }
+    }
+
+    @Synchronized
+    fun rollback(expected: Installed): Installed {
+        val records = list()
+        val current = records.firstOrNull { it.id == expected.id && it.version == expected.version }
+            ?: fail("INSTALLATION_CHANGED")
+        val previous = readPrevious(current) ?: fail("ROLLBACK_UNAVAILABLE")
+        if (previous.version != expected.rollbackVersion) fail("INSTALLATION_CHANGED")
+        return switchInstall(current.id, current, records) { copyResources(previous, it) }
+    }
+
+    fun canRollbackModel(previous: JSONObject, current: JSONObject): Boolean =
+        previous.getString("version").substringBefore('.') == current.getString("version").substringBefore('.') &&
+            canonicalModelValue(previous.getJSONArray("collections")) == canonicalModelValue(current.getJSONArray("collections"))
+
+    private fun readPrevious(current: Installed): Installed? =
+        readInstalled(File(current.directory, PREVIOUS), current.id)?.takeIf {
+            compareVersions(it.version, current.version) < 0 && canRollbackModel(it.dataModel, current.dataModel)
+        }
+
+    private fun Installed.withRollbackVersion() = copy(rollbackVersion = readPrevious(this)?.version)
+
+    private fun copyResources(source: Installed, destination: File) {
+        for (path in source.resources + "manifest.json") {
+            File(source.directory, path).copyTo(File(destination, path))
+        }
+    }
+
+    private fun indexJson(records: List<Installed>) = JSONArray().apply {
+        records.sortedBy { it.id }.forEach {
+            put(JSONObject().put("id", it.id).put("name", it.name).put("version", it.version))
+        }
+    }.toString()
+
+    private fun switchInstall(id: String, current: Installed?, records: List<Installed>, prepare: (File) -> Unit): Installed {
+        val stage = File(root, ".stage-${System.nanoTime()}")
+        val target = File(root, id)
+        val backup = File(root, ".backup-$id-${System.nanoTime()}")
+        var switched = false
+        try {
+            if (!stage.mkdir()) fail("PACKAGE_CORRUPT")
+            prepare(stage)
+            val staged = readInstalled(stage, id)?.withRollbackVersion() ?: fail("PACKAGE_CORRUPT")
+            if (File(stage, PREVIOUS).exists() && staged.rollbackVersion == null) fail("PACKAGE_CORRUPT")
+            if (current != null) {
+                if (!target.renameTo(backup)) fail("PACKAGE_CORRUPT")
+            } else if (target.exists()) {
                 fail("PACKAGE_CORRUPT")
             }
-            val records = list().filterNot { it.id == pkg.id } + Installed(
-                pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources, pkg.capabilities, pkg.model,
-            )
-            val json = JSONArray().apply {
-                records.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("version", it.version)) }
-            }
-            if (!prefs.edit().putString("items", json.toString()).commit()) {
-                target.deleteRecursively()
-                if (backup.exists()) backup.renameTo(target)
-                fail("PACKAGE_CORRUPT")
-            }
+            if (!stage.renameTo(target)) fail("PACKAGE_CORRUPT")
+            switched = true
+            val installed = staged.copy(directory = target)
+            val json = indexJson(records.filterNot { it.id == id } + installed)
+            if (!prefs.edit().putString("items", json).commit()) fail("PACKAGE_CORRUPT")
             backup.deleteRecursively()
-            candidate.directory.delete()
-            return Installed(pkg.id, pkg.name, pkg.version, target, pkg.entry, pkg.resources, pkg.capabilities, pkg.model)
-        } catch (e: ImportFailure) {
-            stage.deleteRecursively()
+            return installed
+        } catch (e: Exception) {
+            if (switched && !target.renameTo(stage)) target.deleteRecursively()
             if (backup.exists() && !target.exists()) backup.renameTo(target)
-            candidate.directory.delete()
-            throw e
-        } catch (_: Exception) {
+            throw e as? ImportFailure ?: ImportFailure("PACKAGE_CORRUPT")
+        } finally {
             stage.deleteRecursively()
-            if (backup.exists() && !target.exists()) backup.renameTo(target)
-            candidate.directory.delete()
-            throw ImportFailure("PACKAGE_CORRUPT")
         }
     }
 
@@ -164,10 +208,14 @@ internal class LocalPluginStore(context: Context) {
         return true
     }
 
-    private fun readInstalled(directory: File): Installed? = runCatching {
-        val manifest = JSONObject(File(directory, "manifest.json").readText())
+    private fun readInstalled(directory: File, expectedId: String = directory.name): Installed? = runCatching {
+        val manifestFile = File(directory, "manifest.json")
+        require(manifestFile.isFile && manifestFile.length() <= MAX_MANIFEST_BYTES)
+        val manifest = parseStrictManifest(manifestFile.readBytes())
+        require(manifest.optInt("manifestVersion") == 1)
+        validateManifest(manifest)
         val id = manifest.getString("id")
-        require(isPluginId(id) && directory.name == id)
+        require(id == expectedId)
         val entry = manifest.getString("entry")
         require(validPath(entry) && entry.endsWith(".html"))
         val capsArray = manifest.getJSONArray("capabilities")
@@ -392,7 +440,11 @@ internal class LocalPluginStore(context: Context) {
                 file.name.startsWith(".backup-") -> {
                     val id = file.name.removePrefix(".backup-").substringBeforeLast('-')
                     val target = File(root, id)
-                    if (isPluginId(id) && !target.exists()) file.renameTo(target) else file.deleteRecursively()
+                    if (isPluginId(id) && readInstalled(target) == null && readInstalled(file, id) != null) {
+                        if (!target.exists() || target.deleteRecursively()) file.renameTo(target)
+                    } else {
+                        file.deleteRecursively()
+                    }
                 }
                 file.name.startsWith(".stage-") || file.name.startsWith("incoming-") -> file.deleteRecursively()
                 file.name.startsWith(".removed-") -> file.deleteRecursively()
@@ -448,9 +500,7 @@ internal class LocalPluginStore(context: Context) {
     }
 
     private fun compatibleModel(old: Installed, next: JSONObject): Boolean {
-        // The index stores the installed manifest alongside its package content for upgrade comparisons.
-        val oldManifest = runCatching { JSONObject(File(old.directory, "manifest.json").readText()) }.getOrNull() ?: return false
-        val a = oldManifest.optJSONObject("dataModel") ?: return false
+        val a = old.dataModel
         val av = a.optString("version").split('.'); val bv = next.optString("version").split('.')
         if (av.size != 3 || bv.size != 3 || av[0] != bv[0] || compareVersions(next.getString("version"), a.getString("version")) < 0) return false
         val oldCols = a.optJSONArray("collections") ?: return false
@@ -487,8 +537,15 @@ internal class LocalPluginStore(context: Context) {
     }
 
     companion object {
+        private var instance: LocalPluginStore? = null
+
+        @Synchronized
+        fun applicationStore(context: Context): LocalPluginStore =
+            instance ?: LocalPluginStore(context.applicationContext).also { instance = it }
+
         const val HOST_API = "1.0.0"
         const val MAX_ZIP_BYTES = 10L * 1024 * 1024
+        private const val PREVIOUS = ".previous"
         const val MAX_RESOURCE_BYTES = 2L * 1024 * 1024
         const val MAX_MANIFEST_BYTES = 256L * 1024
         const val MAX_TOTAL_BYTES = 20L * 1024 * 1024

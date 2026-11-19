@@ -1,5 +1,17 @@
 # 变更记录
 
+## 2026-11-19
+
+- **变更：**完成阶段 3.3 修改与回退。规格工具支持从任一已确认版本派生草稿、追问、双基线差异展示与摘要确认；规格 Schema、生成器和项目历史支持修订来源。Android 宿主新增上一版本回退、完整性复核和切换恢复；同步协议、计划、阶段说明和 `android-app/验证记录.md`。
+- **原因/影响：**同一插件可基于旧规格连续迭代。宿主在数据结构一致时可恢复紧邻的上一安装版本，保留当前全部笔记和页面来源存储。失败构建保留可用构建，失败导入保留当前安装及回退副本。
+- **验证：**`python scripts/verify-stage33.py --android --serial emulator-5554` 通过 4 项桌面检查及 Android API 37 / WebView 145 的两轮更新、失败导入、取消和确认回退、资源核对和数据重启保持；`python scripts/verify-stage15.py --serial emulator-5554` 通过 60 项。阶段 2.5、阶段 3.1 桌面检查、阶段 3.2、协议夹具、命令行两轮生成和 Python/Node 语法检查通过；`.\gradlew.bat :app:assembleDebug` 和 `:app:lintDebug --offline` 成功（0 项错误、5 项既有警告）。`git diff --check` 通过。阶段 3.3 的设备验收采用模拟器，真机、最低 API、旧 WebView 和阶段 3.4 未验收。
+
+## 2026-11-19
+
+- **变更：**完成阶段 3.2 项目与版本历史查询：新增 `scripts/project_history.py` 聚合确认规格、关联任务、构建测试结果和最近可用构建摘要；新增 `scripts/verify-stage32.py` 和 `阶段3.2项目与版本.md`，同步阶段计划及项目介绍。
+- **原因/影响：**用户可按项目和规格版本追踪生成状态与包结果，较新失败版本不会覆盖历史中的可用构建；Android 当前安装版本仍由宿主列表提供，电脑端明确标记为未同步，所有历史查询保持 `deliverable: false`。
+- **验证：**`python scripts/verify-stage32.py` 通过，覆盖两版规格/任务/构建关联、测试结果、较新失败版本不替代旧版成功构建及设备安装状态未同步；`python scripts/verify-stage25.py` 的阶段 2.1（5 项）、2.2（29 项）、2.3（30 项）、包追溯和 Edge 预览回归全部通过；Python 编译和 `git diff --check` 通过；在 `android-app/` 执行 `.\gradlew.bat :app:assembleDebug` 成功（35 项任务均为最新，保留既有 SDK XML 版本提示）。本阶段不修改 Android 源码，未执行模拟器或真机验收；设备当前版本继续由 Android 宿主列表显示并人工核对，未宣称电脑端已同步。
+
 ## 2026-11-18
 
 - **变更：**完成阶段 3.1：新增 `scripts/plugin_delivery.py`，从 SQLite 成功构建快照导出 ZIP/核对单，复核任务、规格、模板、固定检查、身份/版本与源码/包摘要；提供复制后复核及显式设备选择、默认拒绝真机、设备端 SHA-256 校验的 ADB 传输。新增 `scripts/verify-stage31.py` 的 15 项交付检查和 `scripts/verify-stage31.mjs` 的实际生成包模拟器选包验收；新增 `阶段3.1交付与导入.md`，同步计划、项目说明及 `android-app/验证记录.md`。

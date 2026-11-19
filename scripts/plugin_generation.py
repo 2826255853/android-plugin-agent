@@ -56,6 +56,7 @@ def _profile(spec: dict[str, Any]) -> None:
     # supported workflow instead of silently promising arbitrary functionality.
     expected = json.loads(PROFILE.read_text(encoding="utf-8"))
     candidate = copy.deepcopy(spec)
+    candidate.pop("revision", None)
     for key in ("projectId", "version", "status", "title"):
         candidate[key] = expected[key]
     try:

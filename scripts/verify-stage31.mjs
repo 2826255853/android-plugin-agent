@@ -1,4 +1,4 @@
-// Stage 3.1 emulator acceptance: generated snapshot -> ADB -> system picker -> installed resources.
+// Generated snapshots through ADB and the system picker, with optional Stage 3.3 iterations.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -7,9 +7,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const [store, taskId, directory, serial] = process.argv.slice(2);
+const [store, taskId, directory, serial, ...iterations] = process.argv.slice(2);
 assert(store && taskId && directory && serial?.startsWith('emulator-'),
   'Usage: verify-stage31.mjs <task-store> <task-id> <handoff-directory> <emulator-serial>');
+assert(iterations.length === 0 || iterations.length === 6, 'Supply all three Stage 3.3 task/directory pairs');
 const adbPath = process.env.ADB ?? join(process.env.LOCALAPPDATA, 'Android/Sdk/platform-tools/adb.exe');
 const python = process.env.PYTHON ?? 'python';
 const appId = 'com.example.pluginhost';
@@ -22,6 +23,15 @@ assert.match(taskId, /^task-[a-f0-9]{32}$/);
 const pluginId = receipt.pluginId;
 const remoteName = `stage31-${taskId}.zip`;
 const badName = `stage31-bad-${taskId}.zip`;
+const iterationBuilds = [];
+for (let i = 0; i < iterations.length; i += 2) {
+  const [id, path] = iterations.slice(i, i + 2);
+  assert.match(id, /^task-[a-f0-9]{32}$/);
+  const next = JSON.parse(await readFile(join(path, 'delivery.json'), 'utf8'));
+  assert.equal(next.pluginId, pluginId);
+  assert.equal(next.pluginVersion, `${2 + i / 2}.0.0`);
+  iterationBuilds.push({ id, path, receipt: next, remoteName: `stage31-${id}.zip` });
+}
 const uiPath = `/sdcard/stage31-${taskId}.xml`;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label, timeoutMs = 30000) {
@@ -59,7 +69,13 @@ async function action(text) {
     const current = nodes();
     const identity = current.find(item => item.text === pluginId);
     if (!identity) { adb('shell', 'input', 'swipe', '540', '1000', '540', '300', '400'); return null; }
-    return current.filter(item => item.text === text).sort((a, b) => Math.abs(a.y - identity.y) - Math.abs(b.y - identity.y))[0];
+    const button = current.filter(item => item.text === text)
+      .sort((a, b) => Math.abs(a.y - identity.y) - Math.abs(b.y - identity.y))[0];
+    if (button) return button;
+    // The expanded row may be clipped even when its identity is still visible.
+    const y = Math.floor(identity.y);
+    adb('shell', 'input', 'swipe', '540', String(y), '540', String(Math.max(0, y - 500)), '400');
+    return null;
   }, `${text} ${pluginId}`);
   adb('shell', 'input', 'tap', String(Math.floor(selected.x)), String(Math.floor(selected.y)));
   await pause(300);
@@ -142,29 +158,97 @@ async function disconnect() {
   cdp?.ws.close(); cdp = undefined;
   if (forwarded) { adb('forward', '--remove', `tcp:${forwarded}`); forwarded = undefined; }
 }
-function installedHashes() {
-  const state = JSON.parse(execFileSync(python, [join(root, 'scripts/task_runtime.py'), '--store', store, 'show', taskId], { encoding: 'utf8', windowsHide: true }));
+function installedHashes(id, expectedVersion, relativeSlot = '') {
+  const state = JSON.parse(execFileSync(python, [join(root, 'scripts/task_runtime.py'), '--store', store, 'show', id], { encoding: 'utf8', windowsHide: true }));
   const files = state.builds.at(-1).files;
+  const prefix = `files/plugins/${pluginId}/${relativeSlot}`;
   for (const [name, expected] of Object.entries(files)) {
     assert.match(name, /^(manifest\.json|index\.html|app\.js|app\.css)$/);
-    assert.equal(hash(adbBytes('exec-out', 'run-as', appId, 'cat', `files/plugins/${pluginId}/${name}`)), expected, name);
+    assert.equal(hash(adbBytes('exec-out', 'run-as', appId, 'cat', prefix + name)), expected, name);
   }
-  const manifest = JSON.parse(adb('exec-out', 'run-as', appId, 'cat', `files/plugins/${pluginId}/manifest.json`));
-  assert.equal(manifest.id, pluginId); assert.equal(manifest.version, receipt.pluginVersion);
+  const manifest = JSON.parse(adb('exec-out', 'run-as', appId, 'cat', prefix + 'manifest.json'));
+  assert.equal(manifest.id, pluginId); assert.equal(manifest.version, expectedVersion);
+}
+function transfer(id, path, expected) {
+  const transferred = JSON.parse(execFileSync(python, [join(root, 'scripts/plugin_delivery.py'), '--store', store,
+    'push', id, '--directory', path, '--serial', serial, '--adb', adbPath], { encoding: 'utf8', windowsHide: true }));
+  assert.equal(transferred.status, 'transferred'); assert.equal(transferred.imported, false);
+  assert.equal(transferred.deliverable, false); assert.equal(transferred.packageSha256, expected.packageSha256);
+  assert.equal(adb('shell', 'toybox', 'sha256sum', transferred.remotePath).split(/\s/)[0], expected.packageSha256);
+}
+const firstNote = 'Fictional stage31 note';
+const storageKey = 'stage33-fictional-page-state';
+async function checkNotes(notes, pageTitle, storageValue, addNote) {
+  await action('打开'); await connect();
+  assert.equal(await cdp.evaluate('document.title'), pageTitle);
+  const stored = await cdp.evaluate(`localStorage.getItem(${JSON.stringify(storageKey)})`);
+  assert.equal(stored, storageValue, 'Page origin storage across versions');
+  await until(() => cdp.evaluate("document.querySelector('#status').textContent.includes('PERMISSION_DENIED')"), 'grants reset');
+  await tap('授权读取');
+  if (addNote) {
+    await tap('授权写入');
+    await cdp.evaluate(`localStorage.setItem(${JSON.stringify(storageKey)}, ${JSON.stringify(addNote)})`);
+    await cdp.evaluate(`document.querySelector('#new-note').click(); document.querySelector('#title').value=${JSON.stringify(addNote)}; document.querySelector('#note-form').requestSubmit()`);
+  } else {
+    await cdp.evaluate("document.querySelector('#refresh').click()");
+  }
+  await until(() => cdp.evaluate(`${JSON.stringify(notes)}.every(note => document.querySelector('#notes').innerText.includes(note))`),
+    'notes preserved across versions');
+  await disconnect(); await tap('返回插件列表');
+}
+async function verifyIterations() {
+  const [second, third, incompatible] = iterationBuilds;
+  const notes = [firstNote];
+  let stored = firstNote;
+  for (const build of [second, third]) {
+    transfer(build.id, build.path, build.receipt);
+    await selectZip(build.remoteName);
+    await until(() => nodes().some(item => item.text === '确认更新插件'), 'update confirmation');
+    await tap('更新');
+    await until(() => nodes().some(item => item.text.includes(`更新完成：${build.receipt.pluginName} ${build.receipt.pluginVersion}`)),
+      'generated update installed');
+    installedHashes(build.id, build.receipt.pluginVersion);
+    const note = `Fictional note added on ${build.receipt.pluginVersion}`;
+    notes.push(note);
+    await checkNotes(notes, build.receipt.pluginName, stored, note);
+    stored = note;
+    console.log(`PASS updated to ${build.receipt.pluginVersion}, exact resources and data from earlier versions`);
+  }
+  transfer(incompatible.id, incompatible.path, incompatible.receipt);
+  await selectZip(incompatible.remoteName);
+  await until(() => nodes().some(item => item.text.includes('数据模型不兼容')), 'reject tightened model');
+  installedHashes(third.id, third.receipt.pluginVersion);
+  await checkNotes(notes, third.receipt.pluginName, stored);
+  installedHashes(second.id, second.receipt.pluginVersion, '.previous/');
+  console.log('PASS incompatible update preserves installed resources and all records');
+
+  await action('回退到 2.0.0');
+  await tap('取消');
+  installedHashes(third.id, third.receipt.pluginVersion);
+  await action('回退到 2.0.0');
+  await until(() => nodes().some(item => item.text.includes(pluginId) && item.text.includes('包括更新后新增的数据')),
+    'rollback data policy and exact plugin in confirmation');
+  await tap('确认回退');
+  await until(() => nodes().some(item => item.text.includes('回退完成')), 'rollback completed');
+  installedHashes(second.id, second.receipt.pluginVersion);
+  assert(!adb('shell', 'run-as', appId, 'ls', '-a', `files/plugins/${pluginId}`).split(/\s+/).includes('.previous'),
+    'Rollback consumes the saved previous version');
+  await checkNotes(notes, second.receipt.pluginName, stored);
+  adb('shell', 'am', 'force-stop', appId); start();
+  installedHashes(second.id, second.receipt.pluginVersion);
+  await checkNotes(notes, second.receipt.pluginName, stored);
+  console.log('PASS rollback confirmation and cancellation, exact restored resources, all three notes and page storage after restart');
+  console.log('ALL STAGE 3.3 ANDROID CHECKS PASSED');
 }
 try {
   assert.equal(adb('shell', 'getprop', 'ro.kernel.qemu').trim(), '1', 'Emulator required');
-  const transferred = JSON.parse(execFileSync(python, [join(root, 'scripts/plugin_delivery.py'), '--store', store,
-    'push', taskId, '--directory', directory, '--serial', serial, '--adb', adbPath], { encoding: 'utf8', windowsHide: true }));
-  assert.equal(transferred.status, 'transferred'); assert.equal(transferred.imported, false);
-  assert.equal(transferred.deliverable, false); assert.equal(transferred.packageSha256, receipt.packageSha256);
-  assert.equal(adb('shell', 'toybox', 'sha256sum', transferred.remotePath).split(/\s/)[0], receipt.packageSha256);
+  transfer(taskId, directory, receipt);
   console.log('PASS explicit target transfer and device-side ZIP SHA-256');
   adb('install', '-r', join(root, 'android-app/app/build/outputs/apk/debug/app-debug.apk'));
   adb('shell', 'am', 'force-stop', appId); start();
   await selectZip(remoteName);
   await until(() => adb('shell', 'run-as', appId, 'ls', `files/plugins/${pluginId}/manifest.json`).trim(), 'installed generated package');
-  installed = true; installedHashes();
+  installed = true; installedHashes(taskId, receipt.pluginVersion);
   console.log('PASS system picker import, installed ID/version and every source hash');
   await action('打开'); await connect();
   await until(() => cdp.evaluate("document.querySelector('#status').textContent.includes('PERMISSION_DENIED')"), 'default denied');
@@ -179,15 +263,19 @@ try {
   await until(() => cdp.evaluate("document.querySelector('#status').textContent.includes('PERMISSION_DENIED')"), 'grants reset after restart');
   await tap('授权读取'); await cdp.evaluate("document.querySelector('#refresh').click()");
   await until(() => cdp.evaluate("document.querySelector('#notes').innerText.includes('Fictional stage31 note')"), 'persistent imported plugin data');
+  if (iterationBuilds.length) {
+    await cdp.evaluate(`localStorage.setItem(${JSON.stringify(storageKey)}, ${JSON.stringify(firstNote)})`);
+  }
   await disconnect(); await tap('返回插件列表');
   adb('push', join(root, 'plugin-protocol/fixtures/invalid-hash-mismatch.zip'), `/sdcard/Download/${badName}`);
   await selectZip(badName);
   await until(() => nodes().some(item => item.text.includes('插件资源摘要校验失败')), 'tampered package rejection');
-  installedHashes();
+  installedHashes(taskId, receipt.pluginVersion);
   console.log('PASS restart persistence and corrupt package rejected with installed resources intact');
   console.log(JSON.stringify({ device: serial, api: adb('shell', 'getprop', 'ro.build.version.sdk').trim(),
     pluginId, pluginVersion: receipt.pluginVersion, packageSha256: receipt.packageSha256, imported: true, deliverable: false }));
   console.log('ALL STAGE 3.1 ANDROID CHECKS PASSED');
+  if (iterationBuilds.length) await verifyIterations();
 } finally {
   await disconnect();
   if (installed) {
@@ -196,11 +284,13 @@ try {
     adb('shell', 'input', 'keyevent', '4');
     start();
     await action('移除');
+    await until(() => nodes().some(item => item.text.includes(`（${pluginId}）`)), 'test plugin identity in removal confirmation');
     const label = await until(() => nodes().find(item => item.text.includes('同时永久删除此插件的宿主数据和页面来源存储')), 'test data deletion option');
     adb('shell', 'input', 'tap', String(Math.floor(label.x)), String(Math.floor(label.y)));
     assert(nodes().some(item => item.checkable && item.checked), 'Explicit deletion must be selected');
     await tap('移除安装资源');
     await until(() => !nodes().some(item => item.text === pluginId), 'temporary plugin cleanup');
   }
-  adb('shell', 'rm', '-f', `/sdcard/Download/${remoteName}`, `/sdcard/Download/${badName}`, uiPath);
+  adb('shell', 'rm', '-f', ...[remoteName, badName, ...iterationBuilds.map(build => build.remoteName)]
+    .map(name => `/sdcard/Download/${name}`), uiPath);
 }
