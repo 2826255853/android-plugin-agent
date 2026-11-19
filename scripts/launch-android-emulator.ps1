@@ -33,19 +33,82 @@ if ($AvdName) {
     $AvdName = $availableAvds[0]
 }
 
+$requestedAvdName = $PSBoundParameters.ContainsKey('AvdName')
 $onlineEmulator = @(& $adbPath devices) |
     Select-String '^emulator-\d+\s+device$' |
     Select-Object -First 1
 
+$serial = $null
 if ($onlineEmulator) {
     $serial = ($onlineEmulator.Line -split '\s+')[0]
-    Write-Host "Using running emulator $serial"
-} else {
+    $avdResponse = @(& $adbPath -s $serial emu avd name 2>$null)
+    $runningAvdName = $avdResponse |
+        Where-Object { $_.Trim() -and $_.Trim() -ne 'OK' } |
+        Select-Object -First 1
+
+    if ($runningAvdName) {
+        $runningAvdName = $runningAvdName.Trim()
+        $emulatorProcess = Get-CimInstance Win32_Process -Filter "Name = 'emulator.exe'" |
+            Where-Object {
+                $avdArgument = [regex]::Match(
+                    $_.CommandLine,
+                    '(?i)(?:^|\s)-avd\s+(?:"([^"]+)"|(\S+))'
+                )
+                if (-not $avdArgument.Success) {
+                    return $false
+                }
+
+                $processAvdName = if ($avdArgument.Groups[1].Success) {
+                    $avdArgument.Groups[1].Value
+                } else {
+                    $avdArgument.Groups[2].Value
+                }
+                $processAvdName -eq $runningAvdName
+            } |
+            Select-Object -First 1
+
+        if ($emulatorProcess -and $emulatorProcess.CommandLine -match '(?i)(?:^|\s)-(?:no-window|qt-hide-window)(?=\s|$)') {
+            Write-Host "Found headless emulator $serial ($runningAvdName); restarting it with a visible window."
+            if (-not $requestedAvdName) {
+                $AvdName = $runningAvdName
+            }
+
+            & $adbPath -s $serial emu kill | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not shut down headless emulator $serial."
+            }
+
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+                Start-Sleep -Seconds 1
+                $processStillRunning = Get-Process -Id $emulatorProcess.ProcessId -ErrorAction SilentlyContinue
+                $deviceStillRegistered = @(& $adbPath devices) |
+                    Select-String "^$([regex]::Escape($serial))\s"
+            } while ((Get-Date) -lt $deadline -and ($processStillRunning -or $deviceStillRegistered))
+
+            if ($processStillRunning -or $deviceStillRegistered) {
+                throw "Headless emulator $serial did not shut down within 30 seconds."
+            }
+
+            $serial = $null
+        } else {
+            Write-Host "Using running emulator $serial"
+        }
+    } else {
+        Write-Host "Using running emulator $serial"
+    }
+}
+
+if (-not $serial) {
     Write-Host "Starting AVD '$AvdName'"
-    Start-Process -FilePath $emulatorPath -ArgumentList @('-avd', $AvdName, '-no-boot-anim')
-    $serial = $null
+    $emulatorArguments = @('-avd', "`"$AvdName`"", '-no-boot-anim')
+    $emulatorProcess = Start-Process -FilePath $emulatorPath -ArgumentList $emulatorArguments -PassThru
     $deadline = (Get-Date).AddMinutes(3)
     while ((Get-Date) -lt $deadline -and -not $serial) {
+        if ($emulatorProcess.HasExited) {
+            throw "Emulator process exited with code $($emulatorProcess.ExitCode) before appearing in adb."
+        }
+
         Start-Sleep -Seconds 2
         $onlineEmulator = @(& $adbPath devices) |
             Select-String '^emulator-\d+\s+device$' |
@@ -56,7 +119,7 @@ if ($onlineEmulator) {
     }
 
     if (-not $serial) {
-        throw 'The emulator did not appear in adb within 3 minutes.'
+        throw 'The emulator did not appear in adb within 3 minutes. Check the AVD configuration and emulator logs.'
     }
 }
 

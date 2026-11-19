@@ -2,6 +2,16 @@
 
 ## 2026-11-19
 
+- **变更：**新增 `后续端到端开发规划.md`，按当前 Android 宿主、电脑端生成工具和阶段 3.4 模拟器证据，规划手机对话/电脑配对、LLM 规格澄清与受控生成、插件构建验证、候选包回传、Android 导入及后续迭代。
+- **原因/影响：**明确尚未实现的手机到电脑指令通道、真实 LLM、通用受控生成和自动回传，并给出分阶段目标、状态契约、安全边界及验收条件，作为后续功能开发路线。
+- **验证：**人工对照 `项目介绍.md`、`计划文档.md`、`插件协议草案.md`、阶段 3.1 与阶段 3.4 文档核实当前能力和未实现范围；`git diff --check` 通过。仅新增规划文档，未运行 Android 构建、设备测试或模型调用。
+
+- **变更：**修复 `scripts/launch-android-emulator.ps1` 复用无窗口 Android 模拟器的问题；遇到以 `-no-window` 或 `-qt-hide-window` 启动的在线 AVD 时，先正常关闭并等待退出，再启动可见的图形模拟器。更新 `android-app/验证记录.md` 记录定位和模拟器验证结果。
+- **原因/影响：**ADB 会将无窗口模拟器报告为在线设备，导致原入口误以为模拟器界面已打开。修复后双击测试入口会显示 Android 手机界面，已经可见的模拟器仍可直接复用。
+- **验证：**PowerShell AST 解析通过；两次运行 `启动模拟器测试.bat`，首次从无窗口实例切换到可见模拟器，`:app:assembleDebug` 成功（35 项最新）、APK 安装成功且 `com.example.pluginhost/.MainActivity` 在前台，桌面截图确认测试页面可见；第二次成功复用可见模拟器；`git diff --check` 通过。未进行真机测试。
+
+## 2026-11-19
+
 - **变更：**新增根目录 `启动模拟器测试.bat` 和 `scripts/launch-android-emulator.ps1`，可自动发现 Android SDK/AVD、复用或启动模拟器、构建 Debug APK、安装并打开宿主应用；支持通过 `-AvdName` 指定 AVD。更新 `android-app/验证记录.md` 记录模拟器复用路径验收。
 - **原因/影响：**提供单入口的 Android 模拟器测试启动流程，减少手动执行构建、安装和启动命令。
 - **验证：**PowerShell AST 解析通过；运行 `启动模拟器测试.bat` 后，` :app:assembleDebug` 成功（35 项最新），APK 在 Android API 37 / WebView 145 模拟器安装成功，`com.example.pluginhost/.MainActivity` 启动并处于前台；`git diff --check` 通过。此轮复用已运行的 `emulator-5554`，未触发模拟器冷启动分支。
