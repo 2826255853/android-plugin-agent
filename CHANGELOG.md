@@ -2,6 +2,16 @@
 
 ## 2026-11-19
 
+- **变更：**新增根目录 `启动模拟器测试.bat` 和 `scripts/launch-android-emulator.ps1`，可自动发现 Android SDK/AVD、复用或启动模拟器、构建 Debug APK、安装并打开宿主应用；支持通过 `-AvdName` 指定 AVD。更新 `android-app/验证记录.md` 记录模拟器复用路径验收。
+- **原因/影响：**提供单入口的 Android 模拟器测试启动流程，减少手动执行构建、安装和启动命令。
+- **验证：**PowerShell AST 解析通过；运行 `启动模拟器测试.bat` 后，` :app:assembleDebug` 成功（35 项最新），APK 在 Android API 37 / WebView 145 模拟器安装成功，`com.example.pluginhost/.MainActivity` 启动并处于前台；`git diff --check` 通过。此轮复用已运行的 `emulator-5554`，未触发模拟器冷启动分支。
+
+## 2026-11-19
+
+- **变更：**完成阶段 3.4 Android 模拟器端到端验收；新增 `阶段3.4端到端验收.md`，同步 `计划文档.md`、`项目介绍.md` 和 `android-app/验证记录.md`。
+- **原因/影响：**以同一虚构 Quick Notes 项目贯通需求规格确认、1.0.0 首版生成/手动交付导入、两轮修改到 2.0.0/3.0.0、Android 实际运行、拒绝不兼容更新、显式回退及重启后的数据保持。阶段 3.4 在 Android API 37 / WebView 145 模拟器基线上通过；不表示真机、API 23、旧 WebView、自动送达或正式发布资格已验证。
+- **验证：**`python scripts/verify-stage33.py --android --serial emulator-5554` 四项桌面检查及 Android 1.0.0 安装运行、2.0.0/3.0.0 两轮更新、4.0.0 不兼容更新拒绝、取消/确认回退和重启数据核对全部通过；`python scripts/verify-stage15.py --serial emulator-5554` 通过 60 项；`python scripts/verify-stage25.py`、`python scripts/verify-stage32.py` 通过；在 `android-app/` 执行 ` .\gradlew.bat :app:assembleDebug` 成功（35 项最新）。模拟器证据已写入 `android-app/验证记录.md`；`git diff --check` 在文档更新后通过。
+
 - **变更：**完成阶段 3.3 修改与回退。规格工具支持从任一已确认版本派生草稿、追问、双基线差异展示与摘要确认；规格 Schema、生成器和项目历史支持修订来源。Android 宿主新增上一版本回退、完整性复核和切换恢复；同步协议、计划、阶段说明和 `android-app/验证记录.md`。
 - **原因/影响：**同一插件可基于旧规格连续迭代。宿主在数据结构一致时可恢复紧邻的上一安装版本，保留当前全部笔记和页面来源存储。失败构建保留可用构建，失败导入保留当前安装及回退副本。
 - **验证：**`python scripts/verify-stage33.py --android --serial emulator-5554` 通过 4 项桌面检查及 Android API 37 / WebView 145 的两轮更新、失败导入、取消和确认回退、资源核对和数据重启保持；`python scripts/verify-stage15.py --serial emulator-5554` 通过 60 项。阶段 2.5、阶段 3.1 桌面检查、阶段 3.2、协议夹具、命令行两轮生成和 Python/Node 语法检查通过；`.\gradlew.bat :app:assembleDebug` 和 `:app:lintDebug --offline` 成功（0 项错误、5 项既有警告）。`git diff --check` 通过。阶段 3.3 的设备验收采用模拟器，真机、最低 API、旧 WebView 和阶段 3.4 未验收。
