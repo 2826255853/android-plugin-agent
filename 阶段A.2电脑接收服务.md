@@ -19,7 +19,7 @@ python scripts/desktop_receiver.py start --bind 192.168.1.23 --port 8443
 | `approve REQUEST_ID` / `reject REQUEST_ID` | 核对设备信息后，明确批准或拒绝对应申请。 |
 | `devices` | 查看各设备的最近配对状态和有效期。 |
 | `revoke DEVICE_ID [REASON]` | 撤销指定设备。原因可选 `user_requested`（默认）、`credential_compromised` 或 `device_removed`。 |
-| `inbox` | 查看临时收件箱的消息 ID、项目 ID、电脑接收时间、状态和正文。 |
+| `inbox` | 查看消息 ID、项目 ID、电脑接收时间、状态和正文。A.3 的存储与清理说明见 [持久收件箱](阶段A.3持久收件箱.md)。 |
 | `stop` | 关闭监听和当前连接。Ctrl+C 或关闭标准输入也可结束服务。 |
 
 `pair` 和 `inbox` 的输出是供操作者查看的控制台内容，分别包含临时配对码和用户正文。应在本机交互式控制台中查看。普通错误日志只输出固定错误分类。
@@ -31,7 +31,7 @@ python scripts/desktop_receiver.py start --bind 192.168.1.23 --port 8443
 | 路径 | 请求 | 响应 |
 | --- | --- | --- |
 | `/v1/pair` | `pair.request` | 使用配对码提交后，原 HTTPS 请求等待电脑确认，最长至申请到期。批准后返回 `pair.confirm`，令牌只出现一次。客户端等待超时需覆盖该申请剩余有效期。 |
-| `/v1/messages` | `message.send` | 验证凭据后将消息放入内存收件箱，返回 HTTP 202 和 `status.response` 的 `queued` 状态。 |
+| `/v1/messages` | `message.send` | A.3 在验证凭据并提交消息后返回 HTTP 200 和 `message.receipt` 的 `received` 状态。 |
 | `/v1/status` | `status.query` | 验证凭据后返回本设备指定消息的状态。找不到消息时返回 HTTP 404 和 `MESSAGE_NOT_FOUND`。 |
 
 消息和查询请求通过 `Authorization: Bearer <credential>` 提交令牌，在 JSON 中携带 `deviceId` 和 `credentialId`。缺少或不匹配的凭据返回 `AUTH_REQUIRED`。已撤销设备使用原凭据发起请求时收到 HTTP 403 和 `pair.revoked`。撤销即时生效，重新配对签发新凭据。所有 HTTP 响应关闭连接，并使用 `Cache-Control: no-store`。
@@ -41,7 +41,7 @@ python scripts/desktop_receiver.py start --bind 192.168.1.23 --port 8443
 ## 本地状态和阶段边界
 
 - TLS 身份和设备注册表保存在 `%LOCALAPPDATA%\AndroidPluginAgentReceiver`，由当前 Windows 帐户的 DPAPI 加密。注册表仅保存随机令牌的 SHA-256 验证摘要及配对元数据。凭据有效期为 90 天，设备状态、撤销和服务器指纹可跨重启恢复。
-- 收件箱最多保留 256 条消息，随进程退出清空。满载后新消息返回可重试的 HTTP 503。HTTP 202 的 `queued` 只表示进入临时收件箱。A.3 将实现事务持久化和持久回执，A.4 将接入 Android 配对界面和发送队列。
+- A.2 的临时收件箱通过 HTTP 202 返回 `queued`。当前版本采用 A.3 的 SQLite 收件箱和持久回执。A.4 将接入 Android 配对界面和发送队列。
 
 ## 验收入口
 
@@ -52,6 +52,6 @@ python scripts/verify-stage-a2.py
 python scripts/verify-stage-a2.py --bind 192.168.1.23
 ```
 
-A.2 回归使用虚构设备和独立临时存储，通过实际 TLS 请求验证显式绑定、证书核对、配对过期和拒绝、批准、限流、凭据授权、临时消息及状态、撤销、停止后端口关闭和重启。回归核对 DPAPI 存储中的验证摘要，以及日志中没有配对码、令牌和正文。
+回归使用虚构设备和独立临时存储，通过实际 TLS 请求验证显式绑定、证书核对、配对过期和拒绝、批准、限流、凭据授权、消息及状态、撤销、停止后端口关闭和重启，并检查 DPAPI 存储和日志。当前回归入口同时覆盖 [A.3 持久收件箱验收](阶段A.3持久收件箱.md)。
 
 2026-11-20，Windows / Python 3.15 / OpenSSL 3.5.9 上的回环和本机以太网接口回归均通过。两轮均验证同一端口重启、撤销仅影响目标设备、另一台虚构设备仍可通过认证。A.1 协议夹具及 Android Debug 构建通过。本轮客户端运行在同一台电脑，Android 网络联调由 A.4 和 A.5 覆盖。

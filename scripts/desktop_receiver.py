@@ -11,10 +11,12 @@ import secrets
 import select
 import socket
 import socketserver
+import sqlite3
 import ssl
 import sys
 import threading
 from collections import deque
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -25,6 +27,7 @@ from message_protocol import (
     CREDENTIAL, DEVICE_ID, MAX_REQUEST_BYTES, RETRY_WINDOW_SECONDS, SCHEMA_VERSION,
     UUID, ProtocolError, parse_json, validate_envelope,
 )
+from receiver_inbox import Inbox
 from receiver_storage import ReceiverStorage, StorageError
 
 
@@ -33,7 +36,6 @@ DEVICE_LIFETIME = timedelta(days=90)
 PAIRING_RATE_WINDOW = 60
 PAIRING_ATTEMPTS = 10
 MAX_PENDING = 8
-MAX_INBOX = 256
 MAX_CONNECTIONS = 16
 IO_TIMEOUT = 5
 REQUEST_TIMEOUT = 10
@@ -65,6 +67,12 @@ def envelope(operation: str, **fields) -> dict:
 
 def response(operation: str, request_id: str | None, **fields) -> dict:
     return validate_envelope(envelope(operation, inReplyTo=request_id or str(uuid4()), **fields))
+
+
+def audit(message_id: str | None, **event: str) -> None:
+    if message_id is not None:
+        event["messageId"] = message_id
+    print(json.dumps({"at": timestamp(now()), **event}), file=sys.stderr, flush=True)
 
 
 def token_digest(token: str) -> str:
@@ -100,16 +108,15 @@ class PendingPair:
 
 
 class Receiver:
-    def __init__(self, storage: ReceiverStorage, fingerprint: str):
+    def __init__(self, storage: ReceiverStorage, fingerprint: str, inbox: Inbox):
         self.storage = storage
         self.fingerprint = fingerprint
+        self.message_store = inbox
         self.devices = storage.load_devices()
         self.lock = threading.Lock()
         self.code: tuple[str, datetime] | None = None
         self.attempts: deque[float] = deque()
         self.pending: dict[str, PendingPair] = {}
-        self.messages: dict[tuple[str, str], dict] = {}
-        self.sequences: set[tuple[str, str, int]] = set()
         self.stopped = False
 
     def open_pairing(self) -> dict:
@@ -219,49 +226,40 @@ class Receiver:
     def message(self, request: dict, token: str) -> tuple[int, dict]:
         with self.lock:
             device_id, credential_id = request["deviceId"], request["credentialId"]
+            message_id = request["messageId"]
             record = self.devices.get(credential_id)
             if (record is None or record["deviceId"] != device_id
                     or not secrets.compare_digest(record["credentialDigest"], token_digest(token))):
                 raise ProtocolError("AUTH_REQUIRED")
             if "revokedAt" in record:
+                audit(message_id, error="DEVICE_REVOKED")
                 return 403, response("pair.revoked", request["requestId"], deviceId=device_id,
                                      credentialId=credential_id, revokedAt=record["revokedAt"])
             if date(record["credentialExpiresAt"]) <= now():
                 raise ProtocolError("PAIRING_EXPIRED")
             if self.stopped:
                 raise ProtocolError("INTERNAL_ERROR")
-            message_id = request["messageId"]
-            key = (device_id, message_id)
-            message = self.messages.get(key)
             if request["operation"] == "message.send":
-                message = self.queue_message(request, message)
+                received_at = now()
+                retry_cutoff = received_at - timedelta(seconds=RETRY_WINDOW_SECONDS)
+                if date(request["createdAt"]) < retry_cutoff:
+                    raise ProtocolError("RETRY_WINDOW_EXPIRED")
+                message, inserted = self.message_store.save(request, timestamp(received_at), retry_cutoff)
+                audit(message_id, status=message["status"] if inserted else "duplicate")
+                return 200, response(
+                    "message.receipt", request["requestId"], requestId=message["receipt_id"],
+                    createdAt=message["received_at"], receivedAt=message["received_at"],
+                    deviceId=device_id, messageId=message_id, projectId=message["project_id"],
+                    sequence=message["sequence"], status=message["status"], retryable=False,
+                )
+            message = self.message_store.get(device_id, message_id)
             if message is None:
                 raise ProtocolError("MESSAGE_NOT_FOUND")
-            return (202 if request["operation"] == "message.send" else 200), response(
+            return 200, response(
                 "status.response", request["requestId"], deviceId=device_id, messageId=message_id,
-                projectId=message["projectId"], sequence=message["sequence"],
-                status="queued", updatedAt=message["receivedAt"], retryable=False,
+                projectId=message["project_id"], sequence=message["sequence"],
+                status=message["status"], updatedAt=message["received_at"], retryable=False,
             )
-
-    def queue_message(self, request: dict, existing: dict | None) -> dict:
-        if (now() - date(request["createdAt"])).total_seconds() > RETRY_WINDOW_SECONDS:
-            raise ProtocolError("RETRY_WINDOW_EXPIRED")
-        content = {key: request.get(key) for key in (
-            "projectId", "sequence", "messageType", "body", "specVersion", "confirmation"
-        )}
-        if existing is not None:
-            if any(existing[key] != value for key, value in content.items()):
-                raise ProtocolError("MESSAGE_ID_CONFLICT")
-            return existing
-        sequence_key = (request["deviceId"], request["projectId"], request["sequence"])
-        if sequence_key in self.sequences:
-            raise ProtocolError("MESSAGE_SEQUENCE_CONFLICT")
-        if len(self.messages) >= MAX_INBOX:
-            raise ProtocolError("INTERNAL_ERROR")
-        message = {**content, "receivedAt": timestamp(now())}
-        self.messages[request["deviceId"], request["messageId"]] = message
-        self.sequences.add(sequence_key)
-        return message
 
     def list_pending(self) -> list[dict]:
         with self.lock:
@@ -280,9 +278,11 @@ class Receiver:
 
     def inbox(self) -> list[dict]:
         with self.lock:
-            return [{"messageId": message_id, "status": "queued",
-                     **{key: value[key] for key in ("projectId", "receivedAt", "body")}}
-                    for (_, message_id), value in self.messages.items()]
+            return self.message_store.list()
+
+    def clear_inbox(self) -> int:
+        with self.lock:
+            return self.message_store.clear()
 
     def stop(self) -> None:
         with self.lock:
@@ -404,6 +404,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         request_id = None
+        message_id = None
         operation = ROUTES.get(self.path)
         receiver = self.server.receiver
         if operation is None:
@@ -416,6 +417,9 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             candidate_id = request.get("requestId")
             if isinstance(candidate_id, str) and UUID.fullmatch(candidate_id):
                 request_id = candidate_id
+            candidate_message_id = request.get("messageId")
+            if operation != "pair.request" and isinstance(candidate_message_id, str) and UUID.fullmatch(candidate_message_id):
+                message_id = candidate_message_id
             validate_envelope(request)
             if request["operation"] != operation:
                 raise ProtocolError("INVALID_REQUEST")
@@ -433,17 +437,17 @@ class ReceiverHandler(BaseHTTPRequestHandler):
                     raise ProtocolError("AUTH_REQUIRED")
                 status, payload = receiver.message(request, token)
         except ProtocolError as error:
-            self.failure(request_id, error.code)
+            self.failure(request_id, error.code, message_id)
             return
         except (TimeoutError, ConnectionError, ssl.SSLError):
             return
-        except OSError:
-            print("receiver: INTERNAL_ERROR", file=sys.stderr)
-            self.failure(request_id, "INTERNAL_ERROR")
+        except (OSError, sqlite3.Error):
+            self.failure(request_id, "INTERNAL_ERROR", message_id)
             return
         self.respond(status, payload)
 
-    def failure(self, request_id: str | None, code: str) -> None:
+    def failure(self, request_id: str | None, code: str, message_id: str | None) -> None:
+        audit(message_id, error=code)
         retryable = code in {"PAIRING_RATE_LIMITED", "INTERNAL_ERROR"}
         error = {"code": code, "retryable": retryable}
         if code == "PAIRING_RATE_LIMITED":
@@ -494,19 +498,21 @@ def console(server: ReceiverServer) -> None:
                     display({"deviceId": device_id, "status": "revoked"})
                 case ["inbox"]:
                     display(receiver.inbox())
+                case ["inbox", "clear", "CONFIRM"]:
+                    display({"cleared": receiver.clear_inbox()})
                 case ["stop"]:
                     return
                 case ["help"]:
                     display({"commands": ["status", "pair", "pending", "approve REQUEST_ID",
                                           "reject REQUEST_ID", "devices", "revoke DEVICE_ID [REASON]",
-                                          "inbox", "stop"]})
+                                          "inbox", "inbox clear CONFIRM", "stop"]})
                 case []:
                     continue
                 case _:
                     display({"error": "UNKNOWN_COMMAND"})
         except ProtocolError as error:
             display({"error": error.code})
-        except OSError:
+        except (OSError, sqlite3.Error):
             display({"error": "INTERNAL_ERROR"})
 
 
@@ -523,8 +529,13 @@ def main() -> int:
         storage = ReceiverStorage()
         with storage.session():
             context, fingerprint = storage.tls_identity()
-            receiver = Receiver(storage, fingerprint)
-            with ReceiverServer((args.bind, args.port), context, receiver) as server:
+            database_path = storage.root / "inbox.sqlite3"
+            with closing(sqlite3.connect(
+                database_path, isolation_level="IMMEDIATE", check_same_thread=False,
+                autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL,
+            )) as database, ReceiverServer(
+                (args.bind, args.port), context, Receiver(storage, fingerprint, Inbox(database))
+            ) as server:
                 worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})
                 worker.start()
                 try:
@@ -538,7 +549,7 @@ def main() -> int:
         return 0
     except StorageError as error:
         print(f"receiver: {error}", file=sys.stderr)
-    except (OSError, ValueError, TimeoutError):
+    except (OSError, ValueError, sqlite3.Error):
         print("receiver: STARTUP_FAILED", file=sys.stderr)
     return 1
 

@@ -1,4 +1,4 @@
-"""Exercise the real Windows A.2 console, pinned TLS transport, and device registry."""
+"""Exercise the Windows A.2/A.3 HTTPS receiver, device registry, and durable inbox."""
 
 from __future__ import annotations
 
@@ -20,9 +20,10 @@ from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from desktop_receiver import IO_TIMEOUT, PAIRING_ATTEMPTS, envelope, now, timestamp, token_digest
-from message_protocol import MAX_REQUEST_BYTES, parse_envelope
+from message_protocol import MAX_BODY_CHARS, MAX_REQUEST_BYTES, parse_envelope
 from receiver_storage import dpapi
 
 
@@ -35,23 +36,59 @@ UNKNOWN_CREDENTIAL = "53af7234-82cc-48e1-8219-e87c5e42516d"
 NO_TOKEN = "x" * 43
 CLIENT_PIN = "a" * 64
 
+# Run the real server and terminate it at a specific transaction boundary.
+INTERRUPT = """
+import os
+import sys
+
+directory, phase, *args = sys.argv[1:]
+sys.path.insert(0, directory)
+sys.argv[1:] = args
+from desktop_receiver import main
+from receiver_inbox import Inbox
+
+save = Inbox.save
+
+def exit_before_commit(statement):
+    if statement == "COMMIT":
+        os._exit(71)
+
+def interrupt_save(self, *args):
+    if phase == "before-commit":
+        self.database.set_trace_callback(exit_before_commit)
+    save(self, *args)
+    os._exit(72)
+
+Inbox.save = interrupt_save
+sys.exit(main())
+"""
+
 
 class Console:
-    def __init__(self, home: Path, address: str, port: int = 0):
+    def __init__(self, home: Path, address: str, port: int = 0, *, interrupt: str | None = None):
+        command = [sys.executable, SCRIPT]
+        if interrupt:
+            command = [sys.executable, "-c", INTERRUPT, SCRIPT.parent, interrupt]
         self.process = subprocess.Popen(
-            [sys.executable, SCRIPT, "start", "--bind", address, "--port", str(port)],
+            [*command, "start", "--bind", address, "--port", str(port)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", env={**os.environ, "LOCALAPPDATA": str(home)},
         )
         self.output: queue.Queue = queue.Queue()
         self.public = []
+        self.errors = []
         self.reader = threading.Thread(target=self.read_stdout, daemon=True)
+        self.error_reader = threading.Thread(target=self.read_stderr, daemon=True)
         self.reader.start()
+        self.error_reader.start()
 
     def read_stdout(self) -> None:
         for line in self.process.stdout:
             self.output.put(line)
         self.output.put(None)
+
+    def read_stderr(self) -> None:
+        self.errors.extend(self.process.stderr)
 
     def read(self, *, private: bool = False):
         line = self.output.get(timeout=10)
@@ -82,14 +119,18 @@ class Console:
             self.process.kill()
         self.process.wait(timeout=10)
         self.reader.join(timeout=10)
+        self.error_reader.join(timeout=10)
         for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
             stream.close()
 
     def stop(self, *sensitive: str) -> None:
         assert self.command("stop") == {"state": "stopped"}
         assert self.process.wait(timeout=10) == 0
-        logs = self.process.stderr.read() + "".join(self.public)
-        assert all(secret not in logs for secret in sensitive), "secret or message content leaked into logs"
+        self.error_reader.join(timeout=10)
+        logs = "".join(self.errors + self.public)
+        for secret in sensitive:
+            escaped = json.dumps(secret, ensure_ascii=True)[1:-1]
+            assert secret not in logs and escaped not in logs, "secret or message content leaked into logs"
         try:
             socket.create_connection(self.address, timeout=0.5).close()
         except (ConnectionRefusedError, TimeoutError):
@@ -165,6 +206,58 @@ def expect_error(reply: tuple[int, dict], status: int, code: str) -> None:
     )
 
 
+def expect_receipt(reply: tuple[int, dict], request: dict) -> dict:
+    status, receipt = reply
+    assert status == 200 and receipt["operation"] == "message.receipt"
+    assert receipt["status"] == "received" and receipt["retryable"] is False
+    assert all(receipt[key] == request[key] for key in ("deviceId", "messageId", "projectId", "sequence"))
+    return receipt
+
+
+def expect_status(reply: tuple[int, dict], receipt: dict) -> None:
+    status, found = reply
+    assert status == 200 and found["operation"] == "status.response" and found["retryable"] is False
+    assert all(found[key] == receipt[key] for key in ("deviceId", "messageId", "projectId", "sequence", "status"))
+    assert found["updatedAt"] == receipt["receivedAt"]
+
+
+def with_body(request: dict, body: str) -> dict:
+    return {**request, "body": body, "bodySha256": hashlib.sha256(body.encode("utf-8")).hexdigest()}
+
+
+def interrupted_send(home: Path, address: str, message: dict, token: str, phase: str, exit_code: int) -> None:
+    with Console(home, address, interrupt=phase) as receiver:
+        try:
+            receiver.post("/v1/messages", message, token)
+        except (http.client.RemoteDisconnected, ConnectionResetError, ssl.SSLEOFError):
+            pass
+        else:
+            raise AssertionError("interrupted receiver sent a response")
+        assert receiver.process.wait(timeout=10) == exit_code
+
+
+def check_recovery(home: Path, address: str, message: dict, token: str, previous: dict) -> dict:
+    query = envelope("status.query", **{key: message[key] for key in ("deviceId", "credentialId", "messageId")})
+    interrupted_send(home, address, message, token, "before-commit", 71)
+    with Console(home, address) as receiver:
+        assert receiver.command("inbox") == [previous]
+        expect_error(receiver.post("/v1/status", query, token), 404, "MESSAGE_NOT_FOUND")
+        receiver.stop(token, BODY)
+
+    interrupted_send(home, address, message, token, "after-commit", 72)
+    with Console(home, address) as receiver:
+        status, found = receiver.post("/v1/status", query, token)
+        assert status == 200 and found["status"] == "received"
+        receipt = expect_receipt(receiver.post("/v1/messages", message, token), message)
+        expect_status((status, found), receipt)
+        assert receiver.post("/v1/messages", message, token) == (200, receipt)
+        inbox = receiver.command("inbox")
+        assert len(inbox) == 2 and inbox[0] == previous and inbox[1]["messageId"] == message["messageId"]
+        receiver.stop(token, BODY)
+    print("PASS interruption before commit rolls back; interruption after commit recovers the original receipt")
+    return inbox[1]
+
+
 def check_connection(console: Console, address: str) -> None:
     assert console.address[0] == address
     assert console.command("status")["address"] == f"https://{address}:{console.address[1]}"
@@ -235,7 +328,8 @@ def run(home: Path, address: str) -> None:
 
         message = envelope("message.send", deviceId=DEVICE, credentialId=query["credentialId"], messageId=MESSAGE,
                            projectId=PROJECT, sequence=1, messageType="user.message", body=BODY,
-                           bodySha256=hashlib.sha256(BODY.encode("utf-8")).hexdigest())
+                           bodySha256=hashlib.sha256(BODY.encode("utf-8")).hexdigest(), specVersion=1,
+                           confirmation={"specVersion": 1, "decision": "confirmed", "confirmedAt": timestamp(now())})
         expect_error(receiver.post("/v1/messages", message), 401, "AUTH_REQUIRED")
         expect_error(receiver.post("/v1/messages", message, NO_TOKEN), 401, "AUTH_REQUIRED")
         expect_error(receiver.post("/v1/messages", {**message, "deviceId": "other-phone"}, token), 401, "AUTH_REQUIRED")
@@ -247,54 +341,95 @@ def run(home: Path, address: str) -> None:
         expect_error(receiver.post("/v1/messages", b'{"operation": 1, "operation": 2}', token), 400, "INVALID_REQUEST")
         expect_error(receiver.post("/v1/messages", b"[" * 10000, token), 400, "INVALID_REQUEST")
         expect_error(receiver.post("/v1/messages", message, token, size=MAX_REQUEST_BYTES + 1), 413, "PAYLOAD_TOO_LARGE")
+        expect_error(receiver.post("/v1/messages", with_body(message, "a" * (MAX_BODY_CHARS + 1)), token),
+                     400, "INVALID_REQUEST")
         expect_error(receiver.post("/v1/messages", {**message, "createdAt": timestamp(now() - timedelta(days=2))}, token),
                      400, "RETRY_WINDOW_EXPIRED")
         expect_error(receiver.post("/v1/tasks", b"{}", token), 404, "INVALID_REQUEST")
         expect_error(receiver.post("/v1/pair", b"{}", token), 429, "PAIRING_RATE_LIMITED")
         expect_error(receiver.post("/v1/status", {**query, "operation": "pair.revoke"}, token), 400, "INVALID_REQUEST")
 
-        status, queued = receiver.post("/v1/messages", message, token)
-        assert status == 202 and queued["operation"] == "status.response" and queued["status"] == "queued"
-        assert receiver.post("/v1/messages", message, token)[1]["updatedAt"] == queued["updatedAt"]
-        status, found = receiver.post("/v1/status", query, token)
-        assert status == 200 and found["status"] == "queued" and found["updatedAt"] == queued["updatedAt"]
-        assert receiver.command("inbox") == [
-            {"messageId": MESSAGE, "projectId": PROJECT, "receivedAt": queued["updatedAt"], "status": "queued", "body": BODY}
+        assert receiver.command("inbox") == []
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            pending = [executor.submit(receiver.post, "/v1/messages", message, token) for _ in range(4)]
+            receipt = expect_receipt(pending[0].result(), message)
+            assert all(reply.result() == (200, receipt) for reply in pending[1:])
+        retried = {**message, "requestId": str(uuid4()),
+                   "confirmation": dict(reversed(list(message["confirmation"].items())))}
+        assert receiver.post("/v1/messages", retried, token) == (200, {**receipt, "inReplyTo": retried["requestId"]})
+        conflicts = [
+            with_body(message, "另一条虚构需求"), {**message, "projectId": "other-project"},
+            {**message, "sequence": 2}, {**message, "messageType": "user.answer"},
+            {**message, "specVersion": 2},
+            {**message, "confirmation": {**message["confirmation"], "decision": "rejected"}},
         ]
+        for conflict in conflicts:
+            expect_error(receiver.post("/v1/messages", conflict, token), 409, "MESSAGE_ID_CONFLICT")
+        expect_error(receiver.post("/v1/messages", {**message, "messageId": str(uuid4())}, token),
+                     409, "MESSAGE_SEQUENCE_CONFLICT")
+        expect_status(receiver.post("/v1/status", query, token), receipt)
+        inbox_row = {"messageId": MESSAGE, "projectId": PROJECT, "receivedAt": receipt["receivedAt"],
+                     "status": "received", "body": BODY}
+        assert receiver.command("inbox") == [inbox_row]
         state_dir = home / "AndroidPluginAgentReceiver"
         protected = (state_dir / "devices.dpapi").read_bytes()
         decrypted = dpapi(protected, encrypt=False)
         assert DEVICE.encode() not in protected and token.encode() not in protected + decrypted
         assert token_digest(token).encode() in decrypted
         assert not list(state_dir.glob("tls-*"))
-        print("PASS authenticated queued status, temporary inbox, framing/schema validation and DPAPI storage")
+        print("PASS durable receipts, concurrent deduplication, message/sequence conflicts, invalid/oversize requests")
         receiver.stop("pairingCode", *(json.dumps(code) for code in (code, rejected_code, legal_code)),
-                      token, NO_TOKEN, BODY)
+                      token, NO_TOKEN, BODY, "另一条虚构需求")
+        events = [json.loads(line) for line in receiver.errors]
+        assert all(set(event) <= {"at", "messageId", "status", "error"} for event in events)
+        assert sum(event.get("status") == "received" and event.get("messageId") == MESSAGE for event in events) == 1
+        assert sum(event.get("status") == "duplicate" and event.get("messageId") == MESSAGE for event in events) == 4
+        assert any(event.get("error") == "MESSAGE_ID_CONFLICT" and event.get("messageId") == MESSAGE for event in events)
         pin, port = receiver.pin, receiver.address[1]
 
+    recovered = check_recovery(home, address, {**message, "messageId": str(uuid4()), "sequence": 2}, token, inbox_row)
     with Console(home, address, port) as receiver:
         assert receiver.pin == pin and receiver.command("devices")[0]["status"] == "paired"
-        assert receiver.command("inbox") == []
-        expect_error(receiver.post("/v1/status", query, token), 404, "MESSAGE_NOT_FOUND")
-        assert receiver.post("/v1/messages", message, token)[0] == 202
+        assert receiver.command("inbox") == [inbox_row, recovered]
+        expect_status(receiver.post("/v1/status", query, token), receipt)
+        assert receiver.post("/v1/messages", message, token) == (200, receipt)
         other_code = receiver.command("pair")["pairingCode"]
         other = pairing_decision(receiver, pairing_request(other_code, device_id="other-phone"), "approve")
         other_query = {**query, "deviceId": other["deviceId"], "credentialId": other["credentialId"]}
         other_token = other["credential"]
+        expect_error(receiver.post("/v1/status", other_query, other_token), 404, "MESSAGE_NOT_FOUND")
+        other_message = {**message, "deviceId": other["deviceId"], "credentialId": other["credentialId"]}
+        other_receipt = expect_receipt(receiver.post("/v1/messages", other_message, other_token), other_message)
+        assert other_receipt["requestId"] != receipt["requestId"]
         assert receiver.command(f"revoke {DEVICE}")["status"] == "revoked"
         for path, request in (("/v1/messages", message), ("/v1/status", query)):
             status, revoked = receiver.post(path, request, token)
             assert status == 403 and revoked["operation"] == "pair.revoked"
         expect_error(receiver.post("/v1/status", query, NO_TOKEN), 401, "AUTH_REQUIRED")
-        expect_error(receiver.post("/v1/status", other_query, other_token), 404, "MESSAGE_NOT_FOUND")
+        expect_status(receiver.post("/v1/status", other_query, other_token), other_receipt)
         receiver.stop(token, other_token, json.dumps(other_code), NO_TOKEN, BODY)
 
     with Console(home, address, port) as receiver:
         assert receiver.command("devices")[0]["status"] == "revoked"
         assert receiver.post("/v1/status", query, token)[1]["operation"] == "pair.revoked"
+        expect_status(receiver.post("/v1/status", other_query, other_token), other_receipt)
+        receiver.stop(token, other_token, BODY)
+
+    with Console(home, address, port) as receiver:
+        assert len(receiver.command("inbox")) == 3
+        assert receiver.command("inbox clear") == {"error": "UNKNOWN_COMMAND"}
+        assert receiver.command("inbox clear CONFIRM") == {"cleared": 3}
+        assert receiver.command("inbox") == []
         expect_error(receiver.post("/v1/status", other_query, other_token), 404, "MESSAGE_NOT_FOUND")
         receiver.stop(token, other_token, BODY)
+    database = state_dir / "inbox.sqlite3"
+    assert BODY.encode("utf-8") not in database.read_bytes()
+    with Console(home, address, port) as receiver:
+        assert receiver.command("inbox") == []
+        assert receiver.command("devices")[0]["status"] == "revoked"
+        receiver.stop(token, other_token, BODY)
     print("PASS stop closes port, restart retains pairing/revocation, logs exclude secrets and body")
+    print("PASS preserved receipts across restart, device isolation and persistent inbox cleanup")
 
 
 def main() -> None:
@@ -310,7 +445,7 @@ def main() -> None:
             )
             assert rejected.returncode == 2 and not list(home.iterdir())
         run(home, args.bind)
-    print("A.2 DESKTOP RECEIVER PASSED")
+    print("A.2/A.3 DESKTOP RECEIVER AND INBOX PASSED")
 
 
 if __name__ == "__main__":
