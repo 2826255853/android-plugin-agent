@@ -69,7 +69,7 @@ def parse_json(raw: str | bytes) -> dict[str, Any]:
         )
     except ProtocolError:
         raise
-    except (TypeError, UnicodeEncodeError, json.JSONDecodeError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise ProtocolError("INVALID_REQUEST", "json") from exc
     if not isinstance(value, dict):
         raise ProtocolError("INVALID_REQUEST", "root-type")
@@ -89,6 +89,10 @@ def _string(value: Any, field: str, *, maximum: int | None = None, non_empty: bo
         raise ProtocolError("INVALID_REQUEST", f"{field}-type")
     if maximum is not None and len(value) > maximum:
         raise ProtocolError("INVALID_REQUEST", f"{field}-length")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ProtocolError("INVALID_REQUEST", f"{field}-utf8") from exc
     return value
 
 
@@ -195,7 +199,7 @@ def _validate_pair_confirm(value: dict[str, Any]) -> None:
             raise ProtocolError("INVALID_REQUEST", "credential-expiry")
     else:
         _keys(value, {"schemaVersion", "requestId", "inReplyTo", "createdAt", "operation", "deviceId", "approved", "errorCode"})
-        if value["errorCode"] not in {"PAIRING_EXPIRED", "PAIRING_REJECTED", "SERVER_IDENTITY_MISMATCH", "PAIRING_RATE_LIMITED"}:
+        if value["errorCode"] not in ("PAIRING_EXPIRED", "PAIRING_REJECTED", "SERVER_IDENTITY_MISMATCH", "PAIRING_RATE_LIMITED"):
             raise ProtocolError("INVALID_REQUEST", "pair-error-code")
 
 
@@ -206,7 +210,7 @@ def _validate_pair_revoke(value: dict[str, Any]) -> None:
         raise ProtocolError("INVALID_REQUEST", "operation")
     _device(value["deviceId"])
     _credential_id(value["credentialId"])
-    if value["reason"] not in {"user_requested", "credential_compromised", "device_removed"}:
+    if value["reason"] not in ("user_requested", "credential_compromised", "device_removed"):
         raise ProtocolError("INVALID_REQUEST", "revoke-reason")
 
 
@@ -225,7 +229,7 @@ def _validate_confirmation(value: Any) -> None:
         raise ProtocolError("INVALID_REQUEST", "confirmation-type")
     _keys(value, {"specVersion", "decision", "confirmedAt"})
     _integer(value["specVersion"], "specVersion", minimum=1)
-    if value["decision"] not in {"confirmed", "rejected"}:
+    if value["decision"] not in ("confirmed", "rejected"):
         raise ProtocolError("INVALID_REQUEST", "confirmation-decision")
     _timestamp(value["confirmedAt"], "confirmedAt")
 
@@ -243,11 +247,9 @@ def _validate_message_send(value: dict[str, Any]) -> None:
     if not PROJECT_ID.fullmatch(project_id):
         raise ProtocolError("INVALID_REQUEST", "project-id-format")
     _integer(value["sequence"], "sequence", minimum=1, maximum=2_147_483_647)
-    if value["messageType"] not in {"user.message", "user.answer", "user.confirmation"}:
+    if value["messageType"] not in ("user.message", "user.answer", "user.confirmation"):
         raise ProtocolError("INVALID_REQUEST", "message-type")
     body = _string(value["body"], "body", maximum=MAX_BODY_CHARS)
-    if len(body) > MAX_BODY_CHARS:
-        raise ProtocolError("INVALID_REQUEST", "body-length")
     digest = _sha(value["bodySha256"], "bodySha256")
     if hashlib.sha256(body.encode("utf-8")).hexdigest() != digest:
         raise ProtocolError("INVALID_REQUEST", "body-hash")
@@ -268,7 +270,7 @@ def _validate_message_receipt(value: dict[str, Any]) -> None:
     if not PROJECT_ID.fullmatch(project_id):
         raise ProtocolError("INVALID_REQUEST", "project-id-format")
     _integer(value["sequence"], "sequence", minimum=1, maximum=2_147_483_647)
-    if value["status"] not in {"received", "duplicate"} or value["retryable"] is not False:
+    if value["status"] not in ("received", "duplicate") or value["retryable"] is not False:
         raise ProtocolError("INVALID_REQUEST", "receipt-status")
     _timestamp(value["receivedAt"], "receivedAt")
 
@@ -294,7 +296,7 @@ def _validate_status_response(value: dict[str, Any]) -> None:
     if not PROJECT_ID.fullmatch(project_id):
         raise ProtocolError("INVALID_REQUEST", "project-id-format")
     _integer(value["sequence"], "sequence", minimum=1, maximum=2_147_483_647)
-    if value["status"] not in {"queued", "received", "failed_retryable", "rejected", "revoked"}:
+    if value["status"] not in ("queued", "received", "failed_retryable", "rejected", "revoked"):
         raise ProtocolError("INVALID_REQUEST", "message-status")
     _timestamp(value["updatedAt"], "updatedAt")
     _boolean(value["retryable"], "retryable")
@@ -315,7 +317,7 @@ def _validate_error(value: dict[str, Any]) -> None:
         raise ProtocolError("INVALID_REQUEST", "error-object")
     error = value["error"]
     _keys(error, {"code", "retryable"}, {"retryAfterSeconds"})
-    if error["code"] not in ERROR_CODES:
+    if _string(error["code"], "error-code") not in ERROR_CODES:
         raise ProtocolError("INVALID_REQUEST", "error-code")
     retryable = _boolean(error["retryable"], "retryable")
     if "retryAfterSeconds" in error:
@@ -327,9 +329,9 @@ def _validate_error(value: dict[str, Any]) -> None:
 def validate_envelope(value: dict[str, Any]) -> dict[str, Any]:
     if "schemaVersion" not in value:
         raise ProtocolError("INVALID_REQUEST", "missing-schema-version")
-    if value["schemaVersion"] != SCHEMA_VERSION:
+    if _integer(value["schemaVersion"], "schemaVersion", minimum=-2_147_483_648) != SCHEMA_VERSION:
         raise ProtocolError("UNSUPPORTED_SCHEMA_VERSION", "schema-version")
-    operation = value.get("operation")
+    operation = _string(value.get("operation"), "operation")
     validators = {
         "pair.request": _validate_pair_request,
         "pair.confirm": _validate_pair_confirm,
