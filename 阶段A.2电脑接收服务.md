@@ -41,7 +41,7 @@ python scripts/desktop_receiver.py start --bind 192.168.1.23 --port 8443
 ## 本地状态和阶段边界
 
 - TLS 身份和设备注册表保存在 `%LOCALAPPDATA%\AndroidPluginAgentReceiver`，由当前 Windows 帐户的 DPAPI 加密。注册表仅保存随机令牌的 SHA-256 验证摘要及配对元数据。凭据有效期为 90 天，设备状态、撤销和服务器指纹可跨重启恢复。
-- A.2 的临时收件箱通过 HTTP 202 返回 `queued`。当前版本采用 A.3 的 SQLite 收件箱和持久回执。A.4 将接入 Android 配对界面和发送队列。
+- A.2 的临时收件箱通过 HTTP 202 返回 `queued`。当前版本采用 A.3 的 SQLite 收件箱和持久回执。手机端配对和发送步骤见 [阶段 A.4 Android 配对与开发会话](阶段A.4安卓配对与会话.md)。
 
 ## 验收入口
 

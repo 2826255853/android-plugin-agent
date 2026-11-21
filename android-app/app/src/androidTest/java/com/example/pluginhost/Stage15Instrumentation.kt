@@ -11,6 +11,8 @@ import android.os.Bundle
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.security.KeyStore
+import java.util.UUID
 
 /** Device tests of the production importer/SQLite store using only Android platform APIs. */
 class Stage15Instrumentation : Instrumentation() {
@@ -41,6 +43,8 @@ class Stage15Instrumentation : Instrumentation() {
             test("storage-byte-and-page-boundary") { verifyStorageBytes() }
             test("read-page-byte-at-and-over") { verifyPageBytes() }
             test("message-protocol-fixtures") { verifyMessageProtocolFixtures() }
+            test("desktop-conversation-outbox") { verifyDesktopOutbox() }
+            test("desktop-pairing-vault") { verifyDesktopPairingVault() }
         } catch (failure: Throwable) {
             failures += "runner: ${failure.javaClass.simpleName}: ${failure.message}"
         } finally {
@@ -105,6 +109,69 @@ class Stage15Instrumentation : Instrumentation() {
     }
 
     private fun assetText(path: String): String = context.assets.open(path).bufferedReader().use { it.readText() }
+
+    private fun verifyDesktopOutbox() {
+        val fingerprint = "a".repeat(64)
+        val body = "虚构需求：保存便签。"
+        lateinit var project: DesktopProject
+        lateinit var first: QueuedMessage
+        DesktopConversationStore(sandbox).use { store ->
+            project = store.createProject("测试项目", fingerprint)
+            check(Regex("[a-z][a-z0-9-]{2,63}").matches(project.id))
+            store.enqueue(project.id, body)
+            first = checkNotNull(store.next(fingerprint, includeRetries = false))
+            check(first.body == body && first.sequence == 1 && first.delivery == Delivery.QUEUED)
+            check(store.next("b".repeat(64), includeRetries = true) == null)
+            store.failed(first.id, DesktopFailure("DESKTOP_UNREACHABLE", retryable = true), retryable = true)
+        }
+        DesktopConversationStore(sandbox).use { store ->
+            check(store.projects().single() == project)
+            check(store.next(fingerprint, includeRetries = false) == null)
+            val retry = checkNotNull(store.next(fingerprint, includeRetries = true))
+            check(retry == first.copy(delivery = Delivery.RETRYABLE, detail = "DESKTOP_UNREACHABLE"))
+            val receipt = DesktopReceipt(UUID.randomUUID().toString(), messageTimestamp())
+            store.received(retry.id, receipt)
+            check(store.next(fingerprint, includeRetries = true) == null)
+            check(store.messages(project.id).single() == first.copy(delivery = Delivery.RECEIVED, receipt = receipt))
+            store.enqueue(project.id, "第二条虚构需求。")
+            val second = checkNotNull(store.next(fingerprint, includeRetries = true))
+            check(second.sequence == 2 && second.id != first.id)
+            store.failed(second.id, DesktopFailure("RATE_LIMITED", retryable = true, retryAfterSeconds = 60), retryable = true)
+            check(store.next(fingerprint, includeRetries = true) == null)
+        }
+    }
+
+    private fun verifyDesktopPairingVault() {
+        val namespace = "test-desktop-${UUID.randomUUID()}"
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        try {
+            val vault = DesktopPairingStore(sandbox, namespace)
+            check(vault.read() == null)
+            val device = vault.device()
+            val endpoint = DesktopEndpoint.parse("https://10.0.2.2:8443", "A".repeat(64))
+            check(endpoint.fingerprint == "a".repeat(64))
+            listOf("http://10.0.2.2:8443", "https://8.8.8.8:8443", "https://10.0.2.2:8443/path").forEach {
+                check(runCatching { DesktopEndpoint.parse(it, endpoint.fingerprint) }.exceptionOrNull() is DesktopFailure)
+            }
+            val link = DesktopLink(endpoint)
+            val credential = DesktopCredential(UUID.randomUUID().toString(), "fixture-token-" + "x".repeat(32), messageTimestamp())
+            vault.save(DesktopPairing(link, credential))
+            val stored = File(sandbox.noBackupFilesDir, namespace).readBytes().toString(Charsets.ISO_8859_1)
+            check(credential.token !in stored && credential.id !in stored)
+            val reopened = DesktopPairingStore(sandbox, namespace)
+            check(reopened.device() == device)
+            val paired = checkNotNull(reopened.read())
+            check(paired.link == link)
+            check(paired.credential?.token == credential.token && paired.credential.id == credential.id)
+            val blocked = link.copy(blockedReason = "DEVICE_REVOKED")
+            reopened.save(DesktopPairing(blocked, null))
+            val revoked = checkNotNull(vault.read())
+            check(revoked.link == blocked && revoked.credential == null)
+        } finally {
+            keyStore.deleteEntry(namespace)
+            keyStore.deleteEntry("$namespace-device")
+        }
+    }
 
     private fun fixture(name: String): File = File(sandbox.filesDir, "candidate.zip").also { file ->
         context.assets.open("stage15/$name").use { input -> file.outputStream().use { input.copyTo(it) } }
@@ -278,7 +345,8 @@ class Stage15Instrumentation : Instrumentation() {
         private val preferences = mutableSetOf<String>()
         override fun getApplicationContext(): Context = this
         override fun getFilesDir(): File = File(root, "files").apply { mkdirs() }
-        override fun getDatabasePath(name: String): File = File(root, name)
+        override fun getNoBackupFilesDir(): File = File(root, "no_backup").apply { mkdirs() }
+        override fun getDatabasePath(name: String): File = File(name).let { if (it.isAbsolute) it else File(root, name) }
         override fun getSharedPreferences(name: String, mode: Int) =
             super.getSharedPreferences("${root.name}-$name".also { preferences.add(it) }, mode)
         override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?): SQLiteDatabase =

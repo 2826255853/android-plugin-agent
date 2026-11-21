@@ -40,11 +40,13 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalContext
+import androidx.webkit.ServiceWorkerControllerCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -80,6 +82,12 @@ class MainActivity : ComponentActivity() {
         val deviceApi = android.os.Build.VERSION.SDK_INT
         bridgeSupported = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
         val webStorageClearSupported = WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE)) {
+            val controller = ServiceWorkerControllerCompat.getInstance()
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BLOCK_NETWORK_LOADS)) {
+                controller.serviceWorkerWebSettings.blockNetworkLoads = true
+            }
+        }
         val assetLoader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
@@ -105,6 +113,7 @@ class MainActivity : ComponentActivity() {
                 var activePlugin by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var removeTarget by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var deletePluginData by remember { mutableStateOf(false) }
+                var showConversations by rememberSaveable { mutableStateOf(false) }
                 val closePlugin = {
                     pluginAccessSession.revokeAll()
                     grantedPluginCapabilities = emptySet()
@@ -164,7 +173,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val active = activePlugin
-                if (active != null) {
+                if (showConversations) {
+                    DesktopConversations(onClose = { showConversations = false })
+                } else if (active != null) {
                     Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
                         Row(modifier = Modifier.fillMaxWidth()) {
                             Button(onClick = { closePlugin() }) { Text("返回插件列表") }
@@ -223,6 +234,7 @@ class MainActivity : ComponentActivity() {
                                 picker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
                             }) { Text("导入 ZIP") }
                         }
+                        TextButton(onClick = { showConversations = true }) { Text("开发会话") }
                         if (packageStatus.isNotEmpty()) {
                             Text(packageStatus, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
                         }
@@ -477,6 +489,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun WebView.configurePluginWebSettings() {
+        settings.blockNetworkLoads = true
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.allowFileAccess = false

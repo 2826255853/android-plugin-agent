@@ -125,7 +125,7 @@ object MessageProtocol {
         val body = string(value, "body")
         if (body.codePointCount(0, body.length) > MAX_BODY_CHARS) fail("INVALID_REQUEST", "body-length")
         hash(value, "bodySha256")
-        val actual = MessageDigest.getInstance("SHA-256").digest(body.toByteArray(StandardCharsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        val actual = sha256Hex(body.toByteArray(StandardCharsets.UTF_8))
         if (actual != string(value, "bodySha256")) fail("INVALID_REQUEST", "body-hash")
         if (value.has("specVersion")) integer(value, "specVersion", 1, Int.MAX_VALUE)
         if (value.has("confirmation")) {
@@ -245,6 +245,9 @@ object MessageProtocol {
     }
 
     private fun fail(code: String, reason: String): Nothing = throw ProtocolException(code, reason)
+
+    internal fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private class JsonKeyScanner(private val source: String) {
         private var index = 0
