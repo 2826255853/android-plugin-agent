@@ -41,6 +41,7 @@ android {
     }
     // Stage A.1 Android protocol checks consume the canonical repository fixtures.
     sourceSets.getByName("androidTest").assets.srcDir("../../message-protocol")
+    sourceSets.getByName("androidTest").assets.srcDir("../../dialogue-protocol")
 }
 
 dependencies {

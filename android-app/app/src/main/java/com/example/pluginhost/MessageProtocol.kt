@@ -30,20 +30,7 @@ object MessageProtocol {
     class ProtocolException(val code: String, val reason: String) : IllegalArgumentException(reason)
 
     fun parse(raw: String): ParsedEnvelope {
-        if (raw.toByteArray(StandardCharsets.UTF_8).size > MAX_REQUEST_BYTES) fail("PAYLOAD_TOO_LARGE", "request-bytes")
-        if (raw.startsWith('\uFEFF')) fail("INVALID_REQUEST", "bom")
-        try {
-            JsonKeyScanner(raw).parseDocument()
-        } catch (error: ProtocolException) {
-            throw error
-        } catch (_: RuntimeException) {
-            fail("INVALID_REQUEST", "json")
-        }
-        val root = try {
-            JSONObject(raw)
-        } catch (_: JSONException) {
-            fail("INVALID_REQUEST", "json")
-        }
+        val root = parseObject(raw)
         if (!root.has("schemaVersion")) fail("INVALID_REQUEST", "missing-schema-version")
         if (int(root, "schemaVersion") != SCHEMA_VERSION) fail("UNSUPPORTED_SCHEMA_VERSION", "schema-version")
         val operation = string(root, "operation")
@@ -60,6 +47,23 @@ object MessageProtocol {
             else -> fail("INVALID_REQUEST", "operation")
         }
         return ParsedEnvelope(operation, root)
+    }
+
+    internal fun parseObject(raw: String, strict: Boolean = false): JSONObject {
+        if (raw.toByteArray(StandardCharsets.UTF_8).size > MAX_REQUEST_BYTES) fail("PAYLOAD_TOO_LARGE", "request-bytes")
+        if (raw.startsWith('\uFEFF')) fail("INVALID_REQUEST", "bom")
+        try {
+            JsonKeyScanner(raw, strict).parseDocument()
+        } catch (error: ProtocolException) {
+            throw error
+        } catch (_: RuntimeException) {
+            fail("INVALID_REQUEST", "json")
+        }
+        return try {
+            JSONObject(raw)
+        } catch (_: JSONException) {
+            fail("INVALID_REQUEST", "json")
+        }
     }
 
     private fun pairRequest(value: JSONObject) {
@@ -249,8 +253,10 @@ object MessageProtocol {
     internal fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private class JsonKeyScanner(private val source: String) {
+    private class JsonKeyScanner(private val source: String, private val strict: Boolean) {
         private var index = 0
+        private var depth = 0
+        private val jsonPrimitive = Regex("true|false|null|-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 
         private fun fail(code: String, reason: String): Nothing = throw ProtocolException(code, reason)
 
@@ -262,6 +268,8 @@ object MessageProtocol {
         }
 
         private fun value() {
+            depth++
+            if (strict && depth > 64) fail("INVALID_REQUEST", "json-depth")
             whitespace()
             if (index >= source.length) fail("INVALID_REQUEST", "json")
             when (source[index]) {
@@ -270,6 +278,7 @@ object MessageProtocol {
                 '"' -> stringValue()
                 else -> primitive()
             }
+            depth--
             whitespace()
         }
 
@@ -303,11 +312,18 @@ object MessageProtocol {
         }
 
         private fun stringValue(): String {
-            if (!consume('"')) fail("INVALID_REQUEST", "string")
+            if (strict) {
+                if (source.getOrNull(index++) != '"') fail("INVALID_REQUEST", "string")
+            } else if (!consume('"')) fail("INVALID_REQUEST", "string")
             val result = StringBuilder()
             while (index < source.length) {
                 when (val character = source[index++]) {
-                    '"' -> return result.toString()
+                    '"' -> {
+                        if (strict && !StandardCharsets.UTF_8.newEncoder().canEncode(result)) {
+                            fail("INVALID_REQUEST", "utf8")
+                        }
+                        return result.toString()
+                    }
                     '\\' -> {
                         if (index >= source.length) fail("INVALID_REQUEST", "string-escape")
                         when (val escaped = source[index++]) {
@@ -340,6 +356,13 @@ object MessageProtocol {
             val start = index
             while (index < source.length && source[index] !in ",]}\t\r\n ") index++
             if (start == index) fail("INVALID_REQUEST", "primitive")
+            if (strict) {
+                val token = source.substring(start, index)
+                if (!jsonPrimitive.matches(token)) fail("INVALID_REQUEST", "primitive")
+                if (token.first() in "-0123456789" && token.toDoubleOrNull()?.isFinite() != true) {
+                    fail("INVALID_REQUEST", "primitive")
+                }
+            }
         }
 
         private fun whitespace() {

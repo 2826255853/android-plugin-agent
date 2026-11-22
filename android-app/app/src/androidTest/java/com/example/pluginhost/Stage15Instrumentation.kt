@@ -43,6 +43,7 @@ class Stage15Instrumentation : Instrumentation() {
             test("storage-byte-and-page-boundary") { verifyStorageBytes() }
             test("read-page-byte-at-and-over") { verifyPageBytes() }
             test("message-protocol-fixtures") { verifyMessageProtocolFixtures() }
+            test("dialogue-protocol-fixtures") { verifyDialogueProtocolFixtures(assetText("fixtures/stage-b1.json")) }
             test("desktop-conversation-outbox") { verifyDesktopOutbox() }
             test("desktop-pairing-vault") { verifyDesktopPairingVault() }
         } catch (failure: Throwable) {
