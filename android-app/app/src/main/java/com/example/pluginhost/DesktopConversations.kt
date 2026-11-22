@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.text.InputFilter
 import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -131,6 +133,11 @@ internal fun DesktopConversations(onClose: () -> Unit) {
 @Composable
 private fun DesktopProjectMessages(session: DesktopConversationSession, project: DesktopProject) {
     var body by remember(project.id) { mutableStateOf("") }
+    val messageList = rememberLazyListState()
+    val newestMessageId = session.messages.lastOrNull()?.id
+    LaunchedEffect(project.id, newestMessageId) {
+        if (newestMessageId != null) messageList.scrollToItem(0)
+    }
     val matchesLink = session.link?.endpoint?.fingerprint == project.fingerprint
     val canRetry = matchesLink && session.link?.blockedReason == null &&
         session.messages.any { it.delivery == Delivery.QUEUED || it.delivery == Delivery.RETRYABLE }
@@ -141,6 +148,7 @@ private fun DesktopProjectMessages(session: DesktopConversationSession, project:
         Text("电脑回执仅确认消息已保存。", style = MaterialTheme.typography.bodySmall)
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f),
+            state = messageList,
             reverseLayout = true,
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -151,7 +159,11 @@ private fun DesktopProjectMessages(session: DesktopConversationSession, project:
                         Text(
                             if (session.sendingId == message.id) "发送中" else when (message.delivery) {
                                 Delivery.QUEUED -> "本机排队"
-                                Delivery.RETRYABLE -> "发送失败，可重试"
+                                Delivery.RETRYABLE -> if (message.detail == "DESKTOP_OFFLINE") {
+                                    "本机排队"
+                                } else {
+                                    "发送失败，可重试"
+                                }
                                 Delivery.RECEIVED -> "电脑已接收"
                                 Delivery.REJECTED -> "发送失败"
                             },
@@ -226,6 +238,14 @@ private fun DesktopPairingForm(session: DesktopConversationSession) {
             enabled = !session.busy,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
         )
+        if (session.link?.blockedReason == null && endpoint != null) {
+            TextButton(enabled = !session.busy && address.isNotBlank(), onClick = {
+                focus.clearFocus()
+                session.updateAddress(address)
+            }) {
+                Text(if (address.trim() == endpoint.address) "检查连接" else "验证并更新电脑地址")
+            }
+        }
         OutlinedTextField(
             value = fingerprint,
             onValueChange = { if (it.length <= 128) fingerprint = it },
@@ -257,6 +277,7 @@ private fun pairingCodeInput(context: Context) = EditText(context).apply {
     inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
     filters = arrayOf(InputFilter.LengthFilter(6))
     setSingleLine()
+    transformationMethod = PasswordTransformationMethod.getInstance()
     isSaveEnabled = false
     isSaveFromParentEnabled = false
     isLongClickable = false

@@ -63,12 +63,44 @@ Inbox.save = interrupt_save
 sys.exit(main())
 """
 
+REPLY_FAULTS = """
+import sys
+import time
+from pathlib import Path
+
+directory, fault_path, *args = sys.argv[1:]
+sys.path.insert(0, directory)
+sys.argv[1:] = args
+from desktop_receiver import ReceiverHandler, close_connection, main
+
+fault = Path(fault_path)
+respond = ReceiverHandler.respond
+
+def respond_with_fault(self, status, payload):
+    if payload.get("operation") == "message.receipt" and fault.is_file():
+        mode = fault.read_text(encoding="ascii")
+        fault.unlink()
+        if mode == "timeout":
+            self.deadline.cancel()
+            time.sleep(20)
+        close_connection(self.connection)
+        self.close_connection = True
+        return
+    respond(self, status, payload)
+
+ReceiverHandler.respond = respond_with_fault
+sys.exit(main())
+"""
+
 
 class Console:
-    def __init__(self, home: Path, address: str, port: int = 0, *, interrupt: str | None = None):
+    def __init__(self, home: Path, address: str, port: int = 0, *,
+                 interrupt: str | None = None, reply_fault: Path | None = None):
         command = [sys.executable, SCRIPT]
         if interrupt:
             command = [sys.executable, "-c", INTERRUPT, SCRIPT.parent, interrupt]
+        elif reply_fault is not None:
+            command = [sys.executable, "-c", REPLY_FAULTS, SCRIPT.parent, reply_fault]
         self.process = subprocess.Popen(
             [*command, "start", "--bind", address, "--port", str(port)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -176,6 +208,7 @@ def pairing_request(code: str, *, expiry=timedelta(minutes=5), device_id=DEVICE)
 
 
 def pairing_decision(console: Console, request: dict, action: str | None) -> dict:
+    devices_before = console.command("devices")
     with ThreadPoolExecutor(max_workers=1) as executor:
         pending = executor.submit(console.post, "/v1/pair", request)
         for _ in range(40):
@@ -191,7 +224,7 @@ def pairing_decision(console: Console, request: dict, action: str | None) -> dic
         assert entries[0]["clientKeyFingerprint"] == CLIENT_PIN
         assert entries[0]["expiresAt"] == request["expiresAt"]
         assert not pending.done()
-        assert all(device["deviceId"] != request["deviceId"] for device in console.command("devices"))
+        assert console.command("devices") == devices_before
         if action:
             assert console.command(f"{action} {request['requestId']}")["decision"] == action
         status, reply = pending.result(timeout=8)
@@ -413,7 +446,14 @@ def run(home: Path, address: str) -> None:
         assert receiver.command("devices")[0]["status"] == "revoked"
         assert receiver.post("/v1/status", query, token)[1]["operation"] == "pair.revoked"
         expect_status(receiver.post("/v1/status", other_query, other_token), other_receipt)
-        receiver.stop(token, other_token, BODY)
+        renewed_code = receiver.command("pair")["pairingCode"]
+        renewed = pairing_decision(receiver, pairing_request(renewed_code), "approve")
+        assert renewed["credentialId"] != query["credentialId"] and renewed["credential"] != token
+        assert receiver.post("/v1/messages", message, token)[1]["operation"] == "pair.revoked"
+        renewed_message = {**message, "credentialId": renewed["credentialId"]}
+        assert receiver.post("/v1/messages", renewed_message, renewed["credential"]) == (200, receipt)
+        assert len(receiver.command("inbox")) == 3
+        receiver.stop(token, other_token, renewed["credential"], json.dumps(renewed_code), BODY)
 
     with Console(home, address, port) as receiver:
         assert len(receiver.command("inbox")) == 3
@@ -426,7 +466,7 @@ def run(home: Path, address: str) -> None:
     assert BODY.encode("utf-8") not in database.read_bytes()
     with Console(home, address, port) as receiver:
         assert receiver.command("inbox") == []
-        assert receiver.command("devices")[0]["status"] == "revoked"
+        assert receiver.post("/v1/status", query, token)[1]["operation"] == "pair.revoked"
         receiver.stop(token, other_token, BODY)
     print("PASS stop closes port, restart retains pairing/revocation, logs exclude secrets and body")
     print("PASS preserved receipts across restart, device isolation and persistent inbox cleanup")

@@ -1,6 +1,7 @@
 package com.example.pluginhost
 
 import android.content.Context
+import android.net.ConnectivityManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -17,6 +18,7 @@ internal class DesktopConversationSession private constructor(context: Context) 
     private val store = DesktopConversationStore(context)
     private val pairingStore = DesktopPairingStore(context)
     private val client = DesktopMessageClient()
+    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private var started = false
 
     var projects by mutableStateOf<List<DesktopProject>>(emptyList())
@@ -41,13 +43,16 @@ internal class DesktopConversationSession private constructor(context: Context) 
         private set
 
     fun start() {
-        if (started) return
-        started = true
         work {
-            projects = io { store.projects() }
-            device = io { pairingStore.device() }
-            link = io { pairingStore.read()?.link }
-            drain(includeRetries = false)
+            if (!started) {
+                projects = io { store.projects() }
+                device = io { pairingStore.device() }
+                link = io { pairingStore.read()?.link }
+                started = true
+                if (drain(includeRetries = false)) return@work
+            }
+            val current = link ?: return@work
+            if (current.blockedReason == null) verifyLink(current, current.endpoint)
         }
     }
 
@@ -68,6 +73,13 @@ internal class DesktopConversationSession private constructor(context: Context) 
             pairing = false
         }
         drain(includeRetries = true)
+    }
+
+    fun updateAddress(address: String) = work {
+        val current = link ?: return@work
+        if (current.blockedReason != null) return@work
+        val endpoint = DesktopEndpoint.parse(address, current.endpoint.fingerprint)
+        if (verifyLink(current, endpoint)) drain(includeRetries = true)
     }
 
     fun openProject(selected: DesktopProject) = work {
@@ -120,20 +132,17 @@ internal class DesktopConversationSession private constructor(context: Context) 
                     if (System.currentTimeMillis() - message.createdAt > MESSAGE_RETRY_WINDOW_MS) {
                         throw DesktopFailure("RETRY_WINDOW_EXPIRED")
                     }
-                    val credential = pairingStore.read()?.credential ?: throw DesktopFailure("PAIRING_REQUIRED")
+                    val credential = credential()
+                    requireNetwork(current.endpoint)
                     client.send(current.endpoint, identity, credential, message)
                 }
                 io { store.received(message.id, receipt) }
                 connection = "CONNECTED"
             } catch (failure: DesktopFailure) {
-                val pairingLost = failure.code in setOf("DEVICE_REVOKED", "AUTH_REQUIRED", "PAIRING_REQUIRED", "PAIRING_EXPIRED")
+                val pairingLost = failure.pairingLost
                 val canRetry = failure.retryable || pairingLost ||
                     failure.code in setOf("SERVER_IDENTITY_MISMATCH", "TLS_UNAVAILABLE")
-                if (pairingLost) {
-                    val blocked = current.copy(blockedReason = failure.code)
-                    io { pairingStore.save(DesktopPairing(blocked, null)) }
-                    link = blocked
-                }
+                if (pairingLost) blockPairing(current, failure.code)
                 io { store.failed(message.id, failure, canRetry) }
                 if (canRetry) {
                     connection = failure.code
@@ -143,6 +152,41 @@ internal class DesktopConversationSession private constructor(context: Context) 
                 sendingId = null
                 refreshMessages()
             }
+        }
+    }
+
+    private suspend fun verifyLink(current: DesktopLink, endpoint: DesktopEndpoint): Boolean {
+        val identity = device ?: return false
+        val updated = DesktopLink(endpoint)
+        try {
+            io {
+                val credential = credential()
+                requireNetwork(endpoint)
+                client.checkPairing(endpoint, identity, credential)
+                if (updated != current) pairingStore.save(DesktopPairing(updated, credential))
+            }
+            link = updated
+            connection = "CONNECTED"
+            return true
+        } catch (failure: DesktopFailure) {
+            if (failure.pairingLost) blockPairing(current, failure.code)
+            if (updated == current || failure.pairingLost) connection = failure.code
+            else notice = desktopFailureText(failure.code)
+            return false
+        }
+    }
+
+    private suspend fun blockPairing(current: DesktopLink, reason: String) {
+        val blocked = current.copy(blockedReason = reason)
+        link = blocked
+        io { pairingStore.save(DesktopPairing(blocked, null)) }
+    }
+
+    private fun credential() = pairingStore.read()?.credential ?: throw DesktopFailure("PAIRING_REQUIRED")
+
+    private fun requireNetwork(endpoint: DesktopEndpoint) {
+        if (endpoint.host != "127.0.0.1" && connectivity.activeNetwork == null) {
+            throw DesktopFailure("DESKTOP_OFFLINE", retryable = true)
         }
     }
 
@@ -182,6 +226,9 @@ internal class DesktopConversationSession private constructor(context: Context) 
     }
 }
 
+private val DesktopFailure.pairingLost: Boolean
+    get() = code in setOf("DEVICE_REVOKED", "AUTH_REQUIRED", "PAIRING_REQUIRED", "PAIRING_EXPIRED")
+
 internal fun desktopFailureText(code: String) = when (code) {
     "DESKTOP_ADDRESS" -> "请输入 HTTPS 地址、局域网 IPv4 和端口。"
     "DESKTOP_FINGERPRINT" -> "请输入电脑显示的 64 位证书指纹。"
@@ -195,8 +242,10 @@ internal fun desktopFailureText(code: String) = when (code) {
     "SERVER_IDENTITY_MISMATCH" -> "电脑证书指纹不匹配，请在电脑上重新核对。"
     "TLS_UNAVAILABLE" -> "当前 Android 系统不支持所需的 TLS 1.3。"
     "DESKTOP_TLS" -> "无法建立 TLS 1.3 连接，请核对电脑服务和证书。"
+    "DESKTOP_OFFLINE" -> "手机当前离线，联网后可重试。"
     "DESKTOP_UNREACHABLE" -> "无法连接电脑，请检查网络和接收服务。"
     "DESKTOP_TIMEOUT" -> "连接或等待电脑响应超时。"
+    "DESKTOP_INTERRUPTED" -> "与电脑的连接中断，可重试原消息。"
     "DESKTOP_RESPONSE" -> "电脑响应无法核验。"
     "RETRY_WINDOW_EXPIRED" -> "已超过 24 小时重试期限。"
     "MESSAGE_ID_CONFLICT", "MESSAGE_SEQUENCE_CONFLICT" -> "电脑已保存同一消息 ID 或序号的其他内容。"

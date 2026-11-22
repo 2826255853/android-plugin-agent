@@ -30,6 +30,11 @@ android {
         compose = true
     }
 
+    // Install the same host code alongside the developer's app for Stage A.5 UI acceptance.
+    if (providers.gradleProperty("stageA5Acceptance").orNull == "true") {
+        buildTypes.getByName("debug").applicationIdSuffix = ".a5acceptance"
+    }
+
     // Only the regression APK includes the temporary package matrix prepared by verify-stage15.py.
     providers.gradleProperty("stage15Assets").orNull?.let { directory ->
         sourceSets.getByName("androidTest").assets.srcDir(directory)

@@ -5,11 +5,13 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
+import java.io.EOFException
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
@@ -111,14 +113,29 @@ internal class DesktopMessageClient {
             .put("bodySha256", MessageProtocol.sha256Hex(message.body.toByteArray(Charsets.UTF_8)))
         val (status, response) = post(endpoint, "/v1/messages", request, credential.token)
         val value = response.json
-        if (status == 403 && response.operation == "pair.revoked" &&
-            value.getString("deviceId") == device.id && value.getString("credentialId") == credential.id
-        ) throw DesktopFailure("DEVICE_REVOKED")
         if (status != 200 || response.operation != "message.receipt" ||
             value.getString("deviceId") != device.id || value.getString("messageId") != message.id ||
             value.getString("projectId") != message.projectId || value.getInt("sequence") != message.sequence
         ) throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
         return DesktopReceipt(value.getString("requestId"), value.getString("receivedAt"))
+    }
+
+    fun checkPairing(endpoint: DesktopEndpoint, device: DesktopDevice, credential: DesktopCredential) {
+        val messageId = UUID.randomUUID().toString()
+        val request = envelope("status.query", messageTimestamp())
+            .put("deviceId", device.id)
+            .put("credentialId", credential.id)
+            .put("messageId", messageId)
+        // A query for an unknown message only returns MESSAGE_NOT_FOUND after authentication.
+        val (status, response) = try {
+            post(endpoint, "/v1/status", request, credential.token)
+        } catch (failure: DesktopFailure) {
+            if (failure.code == "MESSAGE_NOT_FOUND") return
+            throw failure
+        }
+        if (status != 200 || response.operation != "status.response" ||
+            response.json.getString("deviceId") != device.id || response.json.getString("messageId") != messageId
+        ) invalidResponse()
     }
 
     private fun envelope(operation: String, createdAt: String): JSONObject = JSONObject()
@@ -139,6 +156,7 @@ internal class DesktopMessageClient {
         val body = json.toByteArray(Charsets.UTF_8)
         val pin = PinnedCertificate(endpoint.fingerprint)
         val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(pin), null) }
+        var handshakeComplete = false
         val (status, response) = try {
             Socket(Proxy.NO_PROXY).use { tcp ->
                 val ip = InetAddress.getByAddress(endpoint.host.split('.').map { it.toInt().toByte() }.toByteArray())
@@ -148,6 +166,7 @@ internal class DesktopMessageClient {
                     tls.enabledProtocols = arrayOf("TLSv1.3")
                     tls.soTimeout = 5_000
                     tls.startHandshake()
+                    handshakeComplete = true
                     val headers = buildString {
                         append("POST $path HTTP/1.1\r\nHost: ${endpoint.host}:${endpoint.port}\r\n")
                         append("Content-Type: application/json\r\nContent-Length: ${body.size}\r\nConnection: close\r\n")
@@ -167,11 +186,15 @@ internal class DesktopMessageClient {
             }
         } catch (_: SocketTimeoutException) {
             throw DesktopFailure("DESKTOP_TIMEOUT", retryable = true)
+        } catch (_: EOFException) {
+            throw DesktopFailure("DESKTOP_INTERRUPTED", retryable = true)
         } catch (_: SSLException) {
             if (pin.rejected) throw DesktopFailure("SERVER_IDENTITY_MISMATCH")
-            throw DesktopFailure("DESKTOP_TLS", retryable = true)
+            throw DesktopFailure(if (handshakeComplete) "DESKTOP_INTERRUPTED" else "DESKTOP_TLS", retryable = true)
         } catch (_: CharacterCodingException) {
             throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
+        } catch (_: SocketException) {
+            throw DesktopFailure(if (handshakeComplete) "DESKTOP_INTERRUPTED" else "DESKTOP_UNREACHABLE", retryable = true)
         } catch (_: IOException) {
             throw DesktopFailure("DESKTOP_UNREACHABLE", retryable = true)
         } catch (_: MessageProtocol.ProtocolException) {
@@ -185,6 +208,10 @@ internal class DesktopMessageClient {
         if (response.json.optString("inReplyTo") != request.getString("requestId")) {
             throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
         }
+        if (status == 403 && response.operation == "pair.revoked" && token != null &&
+            response.json.getString("deviceId") == request.getString("deviceId") &&
+            response.json.getString("credentialId") == request.getString("credentialId")
+        ) throw DesktopFailure("DEVICE_REVOKED")
         if (status in 400..599 && response.operation == "error" && error != null) {
             throw DesktopFailure(error.getString("code"), error.getBoolean("retryable"), error.optInt("retryAfterSeconds"))
         }
