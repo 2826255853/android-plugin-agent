@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import org.json.JSONObject
 
 @Composable
 internal fun DesktopConversations(onClose: () -> Unit) {
@@ -145,7 +146,13 @@ private fun DesktopProjectMessages(session: DesktopConversationSession, project:
         Text(project.name, style = MaterialTheme.typography.headlineSmall)
         SelectionContainer { Text(project.id, style = MaterialTheme.typography.bodySmall) }
         if (!matchesLink) Text("此项目关联另一台电脑，重新连接该电脑后可发送。")
-        Text("电脑回执仅确认消息已保存。", style = MaterialTheme.typography.bodySmall)
+        if (session.messages.any { it.delivery == Delivery.RECEIVED }) {
+            TextButton(
+                enabled = matchesLink && session.link?.blockedReason == null && !session.busy,
+                onClick = session::refreshDialogue,
+            ) { Text("刷新规格会话") }
+        }
+        session.dialogueNotice?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f),
             state = messageList,
@@ -170,6 +177,7 @@ private fun DesktopProjectMessages(session: DesktopConversationSession, project:
                             style = MaterialTheme.typography.labelLarge,
                         )
                         message.detail?.let { Text(desktopFailureText(it), style = MaterialTheme.typography.bodySmall) }
+                        session.dialogueHeads[message.id]?.let { DesktopDialogueState(it) }
                         SelectionContainer {
                             Column {
                                 Text("消息 ID ${message.id}", style = MaterialTheme.typography.bodySmall)
@@ -199,6 +207,36 @@ private fun DesktopProjectMessages(session: DesktopConversationSession, project:
             }) { Text("发送") }
             if (canRetry) TextButton(enabled = !session.busy, onClick = session::retry) { Text("重试待发送消息") }
         }
+    }
+}
+
+@Composable
+private fun DesktopDialogueState(event: JSONObject) {
+    val type = event.getString("type")
+    val state = when (type) {
+        "desktop.status" -> when (event.getString("state")) {
+            "queued" -> "规格会话排队中"
+            "running" -> "规格会话处理中"
+            "cancelled" -> "规格会话已取消"
+            "confirmed" -> "规格已确认"
+            else -> "规格会话已连接"
+        }
+        "desktop.question" -> "规格会话等待补充"
+        "desktop.draft" -> "规格草案已收到"
+        "desktop.review" -> "规格等待审阅"
+        else -> "规格会话处理失败"
+    }
+    Text(state, style = MaterialTheme.typography.labelLarge)
+    when (type) {
+        "desktop.question" -> Text(event.getString("question"))
+        "desktop.draft", "desktop.review" -> {
+            val draft = JSONObject(event.getString("specJson"))
+            for (field in listOf("title", "goal")) {
+                (draft.opt(field) as? String)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+            if (type == "desktop.review") Text(event.getString("summary"))
+        }
+        "desktop.error" -> Text(desktopFailureText(event.getString("code")), style = MaterialTheme.typography.bodySmall)
     }
 }
 

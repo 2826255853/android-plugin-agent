@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime
 from uuid import uuid4
 
@@ -14,8 +15,9 @@ MAX_INBOX = 256
 
 
 class Inbox:
-    def __init__(self, database: sqlite3.Connection):
+    def __init__(self, database: sqlite3.Connection, database_lock=None):
         self.database = database
+        self.database_lock = database_lock or threading.RLock()
         database.row_factory = sqlite3.Row
         with database:
             database.execute("PRAGMA synchronous = FULL")
@@ -40,9 +42,10 @@ class Inbox:
             """)
 
     def get(self, device_id: str, message_id: str) -> sqlite3.Row | None:
-        return self.database.execute(
-            "SELECT * FROM messages WHERE device_id = ? AND message_id = ?", (device_id, message_id)
-        ).fetchone()
+        with self.database_lock:
+            return self.database.execute(
+                "SELECT * FROM messages WHERE device_id = ? AND message_id = ?", (device_id, message_id)
+            ).fetchone()
 
     def save(self, request: dict, received_at: str, retry_cutoff: datetime) -> tuple[sqlite3.Row, bool]:
         device_id, message_id = request["deviceId"], request["messageId"]
@@ -53,7 +56,7 @@ class Inbox:
                 {key: request[key] for key in ("specVersion", "confirmation") if key in request}, sort_keys=True
             ),
         }
-        with self.database:
+        with self.database_lock, self.database:
             self.database.execute("BEGIN IMMEDIATE")
             existing = self.get(device_id, message_id)
             if existing is not None:
@@ -83,11 +86,20 @@ class Inbox:
             return inserted[0], True
 
     def list(self) -> list[dict]:
-        return [dict(row) for row in self.database.execute("""
-            SELECT message_id AS messageId, project_id AS projectId, received_at AS receivedAt, status, body
-            FROM messages ORDER BY rowid
-        """)]
+        with self.database_lock:
+            return [dict(row) for row in self.database.execute("""
+                SELECT message_id AS messageId, project_id AS projectId, received_at AS receivedAt, status, body
+                FROM messages ORDER BY rowid
+            """)]
+
+    def dialogue_messages(self) -> list[sqlite3.Row]:
+        with self.database_lock:
+            return self.database.execute("""
+                SELECT device_id, message_id, project_id, message_type, body_sha256
+                FROM messages WHERE message_type = 'user.message' ORDER BY rowid
+            """).fetchall()
 
     def clear(self) -> int:
-        with self.database:
+        with self.database_lock, self.database:
+            self.database.execute("BEGIN IMMEDIATE")
             return self.database.execute("DELETE FROM messages").rowcount

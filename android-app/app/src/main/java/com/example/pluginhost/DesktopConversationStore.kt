@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
@@ -24,7 +25,7 @@ internal data class QueuedMessage(
 )
 
 internal class DesktopConversationStore(context: Context, name: String = "desktop-conversations.db") :
-    SQLiteOpenHelper(context, File(context.noBackupFilesDir, name).absolutePath, null, 1) {
+    SQLiteOpenHelper(context, File(context.noBackupFilesDir, name).absolutePath, null, 2) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
@@ -57,10 +58,27 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
             )
             """.trimIndent(),
         )
+        createDialogueTable(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("Unsupported conversation database upgrade")
+        check(oldVersion == 1 && newVersion == 2)
+        createDialogueTable(db)
+    }
+
+    private fun createDialogueTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE dialogue_events (
+                session_id TEXT NOT NULL REFERENCES messages(id),
+                sequence INTEGER NOT NULL CHECK (sequence BETWEEN 1 AND 2147483647),
+                event_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (session_id, sequence),
+                UNIQUE (session_id, event_id)
+            )
+            """.trimIndent(),
+        )
     }
 
     fun projects(): List<DesktopProject> = readableDatabase.rawQuery(
@@ -106,6 +124,64 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
         "SELECT $MESSAGE_COLUMNS FROM messages WHERE project_id = ? ORDER BY sequence", arrayOf(projectId),
     ).use { cursor ->
         buildList { while (cursor.moveToNext()) add(cursor.message()) }
+    }
+
+    fun dialogueHeads(projectId: String): Map<String, JSONObject> = readableDatabase.rawQuery(
+        """
+        SELECT e.session_id, e.payload
+        FROM dialogue_events e JOIN messages m ON m.id = e.session_id
+        WHERE m.project_id = ? AND e.sequence = (
+            SELECT MAX(sequence) FROM dialogue_events WHERE session_id = e.session_id
+        )
+        """.trimIndent(), arrayOf(projectId),
+    ).use { cursor ->
+        buildMap {
+            while (cursor.moveToNext()) put(cursor.getString(0), DialogueProtocol.parse(cursor.getString(1)))
+        }
+    }
+
+    fun applyDialoguePage(message: QueuedMessage, page: JSONObject): Int {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            var through = db.rawQuery(
+                "SELECT COALESCE(MAX(sequence), 0) FROM dialogue_events WHERE session_id = ?", arrayOf(message.id),
+            ).use { check(it.moveToFirst()); it.getInt(0) }
+            if (page.getString("sessionId") != message.id || page.getString("projectId") != message.projectId ||
+                page.getInt("after") > through
+            ) throw DesktopFailure("DESKTOP_RESPONSE")
+            val events = page.getJSONArray("events")
+            for (index in 0 until events.length()) {
+                val event = events.getJSONObject(index)
+                if (event.getString("messageId") != message.id) throw DesktopFailure("DESKTOP_RESPONSE")
+                val sequence = event.getInt("sequence")
+                val payload = event.toString()
+                if (sequence <= through) {
+                    val previous = db.rawQuery(
+                        "SELECT payload FROM dialogue_events WHERE session_id = ? AND sequence = ?",
+                        arrayOf(message.id, sequence.toString()),
+                    ).use { if (it.moveToFirst()) JSONObject(it.getString(0)) else null }
+                    val keys = event.keys().asSequence().toSet()
+                    if (previous == null || previous.keys().asSequence().toSet() != keys ||
+                        keys.any { previous.opt(it) != event.opt(it) }
+                    ) throw DesktopFailure("DESKTOP_RESPONSE")
+                    continue
+                }
+                if (sequence != through + 1) throw DesktopFailure("DESKTOP_RESPONSE")
+                val inserted = db.insertWithOnConflict("dialogue_events", null, ContentValues().apply {
+                    put("session_id", message.id)
+                    put("sequence", sequence)
+                    put("event_id", event.getString("eventId"))
+                    put("payload", payload)
+                }, SQLiteDatabase.CONFLICT_IGNORE)
+                if (inserted == -1L) throw DesktopFailure("DESKTOP_RESPONSE")
+                through = sequence
+            }
+            db.setTransactionSuccessful()
+            return through
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun next(fingerprint: String, includeRetries: Boolean): QueuedMessage? {

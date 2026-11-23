@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /** Process-scoped to serialize queue work across Activity recreation. */
 internal class DesktopConversationSession private constructor(context: Context) {
@@ -26,6 +27,10 @@ internal class DesktopConversationSession private constructor(context: Context) 
     var project by mutableStateOf<DesktopProject?>(null)
         private set
     var messages by mutableStateOf<List<QueuedMessage>>(emptyList())
+        private set
+    var dialogueHeads by mutableStateOf<Map<String, JSONObject>>(emptyMap())
+        private set
+    var dialogueNotice by mutableStateOf<String?>(null)
         private set
     var link by mutableStateOf<DesktopLink?>(null)
         private set
@@ -84,12 +89,15 @@ internal class DesktopConversationSession private constructor(context: Context) 
 
     fun openProject(selected: DesktopProject) = work {
         messages = io { store.messages(selected.id) }
+        dialogueHeads = io { store.dialogueHeads(selected.id) }
         project = selected
     }
 
     fun closeProject() {
         project = null
         messages = emptyList()
+        dialogueHeads = emptyMap()
+        dialogueNotice = null
     }
 
     fun createProject(name: String, onSaved: () -> Unit) = work {
@@ -116,6 +124,49 @@ internal class DesktopConversationSession private constructor(context: Context) 
 
     fun retry() = work {
         if (!drain(includeRetries = true)) notice = "当前没有可重试的消息，请核对配对状态或稍后再试。"
+    }
+
+    fun refreshDialogue() = work { syncDialogue() }
+
+    private suspend fun syncDialogue() {
+        val selected = project ?: return
+        val identity = device ?: return
+        val current = link ?: return
+        if (current.endpoint.fingerprint != selected.fingerprint || current.blockedReason != null) return
+        dialogueNotice = null
+        try {
+            val received = messages.filter { it.delivery == Delivery.RECEIVED }
+            val localHeads = dialogueHeads
+            if (received.isEmpty()) return
+            val missingSession = io {
+                requireNetwork(current.endpoint)
+                val credential = credential()
+                var missing = false
+                for (message in received) {
+                    try {
+                        var through = localHeads[message.id]?.getInt("sequence") ?: 0
+                        do {
+                            val page = client.pullDialogue(current.endpoint, identity, credential, selected.id, message.id, through)
+                            through = store.applyDialoguePage(message, page)
+                        } while (page.getBoolean("hasMore"))
+                        if (through > 0) {
+                            client.acknowledgeDialogue(current.endpoint, identity, credential, selected.id, message.id, through)
+                        }
+                    } catch (failure: DesktopFailure) {
+                        if (failure.code != "SESSION_NOT_FOUND") throw failure
+                        missing = true
+                    }
+                }
+                missing
+            }
+            if (missingSession && project == selected) dialogueNotice = desktopFailureText("SESSION_NOT_FOUND")
+        } catch (failure: DesktopFailure) {
+            if (failure.pairingLost) blockPairing(current, failure.code)
+            if (project == selected) dialogueNotice = desktopFailureText(failure.code)
+        } finally {
+            val updated = io { store.dialogueHeads(selected.id) }
+            if (project == selected) dialogueHeads = updated
+        }
     }
 
     private suspend fun drain(includeRetries: Boolean): Boolean {
@@ -252,6 +303,12 @@ internal fun desktopFailureText(code: String) = when (code) {
     "PAYLOAD_TOO_LARGE", "INVALID_REQUEST" -> "电脑拒绝了消息大小或格式。"
     "RATE_LIMITED" -> "发送过于频繁，请稍后重试。"
     "INTERNAL_ERROR" -> "电脑接收服务暂时无法保存消息。"
+    "SESSION_NOT_FOUND" -> "电脑尚未提供此规格会话，请稍后刷新。"
+    "CURSOR_EXPIRED", "INVALID_CURSOR" -> "电脑会话记录与本机进度不一致。"
+    "MODEL_USAGE_UNCERTAIN" -> "上次模型调用结果待核对。"
+    "MODEL_BUDGET_EXHAUSTED" -> "项目模型预算已用完。"
+    "MODEL_INPUT_TOO_LARGE" -> "需求正文超过模型处理上限。"
+    "MODEL_TIMEOUT" -> "电脑等待模型响应超时。"
     "PROJECT_NAME" -> "请输入 1 至 64 个字符的项目名称。"
     "MESSAGE_BODY" -> "请输入消息，最多 12,000 个字符。"
     else -> "电脑拒绝了请求。"

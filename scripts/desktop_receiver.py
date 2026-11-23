@@ -27,6 +27,8 @@ from message_protocol import (
     CREDENTIAL, DEVICE_ID, MAX_REQUEST_BYTES, RETRY_WINDOW_SECONDS, SCHEMA_VERSION,
     UUID, ProtocolError, parse_json, validate_envelope,
 )
+from dialogue_coordinator import DialogueCoordinator
+from dialogue_protocol import strict_object, validate as validate_dialogue
 from receiver_inbox import Inbox
 from receiver_storage import ReceiverStorage, StorageError
 
@@ -40,11 +42,19 @@ MAX_CONNECTIONS = 16
 IO_TIMEOUT = 5
 REQUEST_TIMEOUT = 10
 ROUTES = {"/v1/pair": "pair.request", "/v1/messages": "message.send", "/v1/status": "status.query"}
+DIALOGUE_ROUTES = {
+    "/v1/dialogue/pull": "dialogue.pull",
+    "/v1/dialogue/ack": "dialogue.ack",
+    "/v1/dialogue/submit": "phone.",
+}
 HTTP_ERRORS = {
-    "AUTH_REQUIRED": 401, "PAIRING_REQUIRED": 403,
+    "AUTH_REQUIRED": 401, "DEVICE_REVOKED": 403, "PAIRING_REQUIRED": 403,
     "PAIRING_EXPIRED": 410, "MESSAGE_NOT_FOUND": 404, "MESSAGE_ID_CONFLICT": 409,
     "MESSAGE_SEQUENCE_CONFLICT": 409, "PAYLOAD_TOO_LARGE": 413,
-    "PAIRING_RATE_LIMITED": 429, "INTERNAL_ERROR": 503,
+    "PAIRING_RATE_LIMITED": 429, "RATE_LIMITED": 429, "INTERNAL_ERROR": 503,
+    "UNSUPPORTED_SCHEMA_VERSION": 400, "SESSION_NOT_FOUND": 404, "CURSOR_EXPIRED": 409,
+    "INVALID_CURSOR": 409, "EVENT_ID_CONFLICT": 409, "EVENT_SEQUENCE_CONFLICT": 409,
+    "STALE_EVENT": 409, "EXPIRED_EVENT": 409, "SPEC_MISMATCH": 409, "INVALID_STATE": 409,
 }
 
 
@@ -112,6 +122,7 @@ class Receiver:
         self.storage = storage
         self.fingerprint = fingerprint
         self.message_store = inbox
+        self.dialogue = DialogueCoordinator(inbox)
         self.devices = storage.load_devices()
         self.lock = threading.Lock()
         self.code: tuple[str, datetime] | None = None
@@ -245,6 +256,7 @@ class Receiver:
                 if date(request["createdAt"]) < retry_cutoff:
                     raise ProtocolError("RETRY_WINDOW_EXPIRED")
                 message, inserted = self.message_store.save(request, timestamp(received_at), retry_cutoff)
+                self.dialogue.ingest(message)
                 audit(message_id, status=message["status"] if inserted else "duplicate")
                 return 200, response(
                     "message.receipt", request["requestId"], requestId=message["receipt_id"],
@@ -260,6 +272,44 @@ class Receiver:
                 projectId=message["project_id"], sequence=message["sequence"],
                 status=message["status"], updatedAt=message["received_at"], retryable=False,
             )
+
+    def dialogue_request(self, request: dict, token: str, credential_id: str) -> tuple[int, dict]:
+        with self.lock:
+            device_id = request["deviceId"]
+            record = self.devices.get(credential_id)
+            if (record is None or record["deviceId"] != device_id
+                    or not secrets.compare_digest(record["credentialDigest"], token_digest(token))):
+                raise ProtocolError("AUTH_REQUIRED")
+            if "revokedAt" in record:
+                raise ProtocolError("DEVICE_REVOKED")
+            if date(record["credentialExpiresAt"]) <= now():
+                raise ProtocolError("AUTH_REQUIRED")
+            if self.stopped:
+                raise ProtocolError("INTERNAL_ERROR")
+
+            kind = request["type"]
+            if kind == "dialogue.pull":
+                return 200, self.dialogue.pull(request)
+            if kind == "dialogue.ack":
+                return 200, self.dialogue.acknowledge(request)
+            return 200, self.dialogue.submit(request)
+
+    @staticmethod
+    def dialogue_error(request: dict | None, code: str) -> dict:
+        request = request or {}
+        device_id = request.get("deviceId")
+        project_id = request.get("projectId")
+        session_id = request.get("sessionId")
+        if not isinstance(device_id, str) or not DEVICE_ID.fullmatch(device_id):
+            device_id = "unknown-device"
+        if not isinstance(project_id, str) or not DEVICE_ID.fullmatch(project_id):
+            project_id = "unknown-project"
+        if not isinstance(session_id, str) or not UUID.fullmatch(session_id):
+            session_id = str(uuid4())
+        return {
+            "dialogueVersion": 1, "deviceId": device_id, "projectId": project_id,
+            "sessionId": session_id, "type": "dialogue.error", "code": code,
+        }
 
     def list_pending(self) -> list[dict]:
         with self.lock:
@@ -350,6 +400,7 @@ class ReceiverServer(socketserver.ThreadingMixIn, HTTPServer):
             for connection in self.connections:
                 close_connection(connection)
         super().server_close()
+        self.receiver.dialogue.stop()
 
 
 def close_connection(connection: socket.socket) -> None:
@@ -383,7 +434,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
         # BaseHTTPRequestHandler would log the untrusted request line and remote address.
         pass
 
-    def read_request_json(self) -> dict:
+    def read_request_body(self) -> bytes:
         lengths = self.headers.get_all("Content-Length", [])
         if (self.headers.get_all("Transfer-Encoding") or len(lengths) != 1
                 or not re.fullmatch(r"[0-9]{1,10}", lengths[0])):
@@ -400,20 +451,48 @@ class ReceiverHandler(BaseHTTPRequestHandler):
         if len(body) != length:
             raise ProtocolError("INVALID_REQUEST")
         self.deadline.cancel()
-        return parse_json(body)
+        return body
 
     def do_POST(self) -> None:
         request_id = None
         message_id = None
         operation = ROUTES.get(self.path)
+        dialogue_operation = DIALOGUE_ROUTES.get(self.path)
         receiver = self.server.receiver
-        if operation is None:
+        if operation is None and dialogue_operation is None:
             self.send_error(404)
+            return
+        if dialogue_operation is not None:
+            request = None
+            try:
+                request = strict_object(self.read_request_body())
+                validate_dialogue(request)
+                kind = request["type"]
+                if kind != dialogue_operation and not (dialogue_operation == "phone." and kind.startswith("phone.")):
+                    raise ProtocolError("INVALID_REQUEST")
+                authorization = self.headers.get_all("Authorization", [])
+                credential_ids = self.headers.get_all("X-Credential-Id", [])
+                if (len(authorization) != 1 or not authorization[0].lower().startswith("bearer ")
+                        or len(credential_ids) != 1 or not UUID.fullmatch(credential_ids[0])):
+                    raise ProtocolError("AUTH_REQUIRED")
+                token = authorization[0][7:]
+                if not CREDENTIAL.fullmatch(token):
+                    raise ProtocolError("AUTH_REQUIRED")
+                status, payload = receiver.dialogue_request(request, token, credential_ids[0])
+            except ProtocolError as error:
+                self.dialogue_failure(request, error.code)
+                return
+            except (TimeoutError, ConnectionError, ssl.SSLError):
+                return
+            except (OSError, sqlite3.Error):
+                self.dialogue_failure(request, "INTERNAL_ERROR")
+                return
+            self.respond(status, payload)
             return
         try:
             if operation == "pair.request":
                 receiver.count_pairing_attempt()
-            request = self.read_request_json()
+            request = parse_json(self.read_request_body())
             candidate_id = request.get("requestId")
             if isinstance(candidate_id, str) and UUID.fullmatch(candidate_id):
                 request_id = candidate_id
@@ -454,8 +533,12 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             error["retryAfterSeconds"] = PAIRING_RATE_WINDOW
         self.respond(HTTP_ERRORS.get(code, 400), response("error", request_id, error=error))
 
+    def dialogue_failure(self, request: dict | None, code: str) -> None:
+        status = HTTP_ERRORS.get(code, 400)
+        self.respond(status, self.server.receiver.dialogue_error(request, code))
+
     def respond(self, status: int, payload: dict) -> None:
-        body = json.dumps(payload, ensure_ascii=True).encode("ascii")
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.close_connection = True
         self.send_response_only(status)
         self.send_header("Connection", "close")
@@ -536,6 +619,7 @@ def main() -> int:
             )) as database, ReceiverServer(
                 (args.bind, args.port), context, Receiver(storage, fingerprint, Inbox(database))
             ) as server:
+                server.receiver.dialogue.start()
                 worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})
                 worker.start()
                 try:

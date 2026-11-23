@@ -45,6 +45,7 @@ class Stage15Instrumentation : Instrumentation() {
             test("message-protocol-fixtures") { verifyMessageProtocolFixtures() }
             test("dialogue-protocol-fixtures") { verifyDialogueProtocolFixtures(assetText("fixtures/stage-b1.json")) }
             test("desktop-conversation-outbox") { verifyDesktopOutbox() }
+            test("desktop-dialogue-cursor-and-upgrade") { verifyDesktopDialogueCursor() }
             test("desktop-pairing-vault") { verifyDesktopPairingVault() }
         } catch (failure: Throwable) {
             failures += "runner: ${failure.javaClass.simpleName}: ${failure.message}"
@@ -139,6 +140,48 @@ class Stage15Instrumentation : Instrumentation() {
             check(second.sequence == 2 && second.id != first.id)
             store.failed(second.id, DesktopFailure("RATE_LIMITED", retryable = true, retryAfterSeconds = 60), retryable = true)
             check(store.next(fingerprint, includeRetries = true) == null)
+        }
+    }
+
+    private fun verifyDesktopDialogueCursor() {
+        val before = DesktopConversationStore(sandbox).use { store ->
+            val project = store.createProject("Dialogue fixture", "a".repeat(64))
+            store.enqueue(project.id, "Fictional requirement")
+            val message = store.messages(project.id).single()
+            store.received(message.id, DesktopReceipt(UUID.randomUUID().toString(), messageTimestamp()))
+            // Prepare an outbox with the v1 tables and a persisted receipt.
+            store.writableDatabase.execSQL("DROP TABLE dialogue_events")
+            store.writableDatabase.version = 1
+            store.messages(project.id).single()
+        }
+        val fixture = JSONObject(assetText("fixtures/stage-b1.json")).getJSONObject("samples")
+        val status = fixture.getJSONObject("status").put("projectId", before.projectId)
+            .put("sessionId", before.id).put("messageId", before.id).put("state", "queued")
+        val running = JSONObject(status.toString()).put("sequence", 2).put("state", "running")
+            .put("eventId", UUID.randomUUID().toString())
+        val first = fixture.getJSONObject("page").put("projectId", before.projectId).put("sessionId", before.id)
+            .put("after", 0).put("next", 1).put("events", org.json.JSONArray().put(status))
+        val second = JSONObject(first.toString()).put("after", 1).put("next", 2)
+            .put("hasMore", false).put("events", org.json.JSONArray().put(running))
+        val pages = listOf(first, second).map { DialogueProtocol.parse(it.toString()) }
+
+        DesktopConversationStore(sandbox).use { store ->
+            check(store.messages(before.projectId).single() == before)
+            try {
+                store.applyDialoguePage(before, pages[1])
+                error("Out-of-order page accepted")
+            } catch (failure: DesktopFailure) {
+                check(failure.code == "DESKTOP_RESPONSE")
+            }
+            check(store.dialogueHeads(before.projectId).isEmpty())
+            check(store.applyDialoguePage(before, pages[0]) == 1)
+            check(store.applyDialoguePage(before, pages[0]) == 1)
+        }
+        DesktopConversationStore(sandbox).use { store ->
+            check(store.dialogueHeads(before.projectId).getValue(before.id).getInt("sequence") == 1)
+            check(store.applyDialoguePage(before, pages[1]) == 2)
+            check(store.applyDialoguePage(before, pages[0]) == 2)
+            check(store.dialogueHeads(before.projectId).getValue(before.id).getString("state") == "running")
         }
     }
 

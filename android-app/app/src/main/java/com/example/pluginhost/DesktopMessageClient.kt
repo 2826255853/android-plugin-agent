@@ -138,6 +138,77 @@ internal class DesktopMessageClient {
         ) invalidResponse()
     }
 
+    fun pullDialogue(
+        endpoint: DesktopEndpoint,
+        device: DesktopDevice,
+        credential: DesktopCredential,
+        projectId: String,
+        sessionId: String,
+        after: Int,
+    ): JSONObject {
+        val request = dialogueEnvelope("dialogue.pull", device, projectId, sessionId)
+            .put("after", after)
+            .put("limit", 20)
+        val response = postDialogue(endpoint, "/v1/dialogue/pull", request, credential)
+        if (response.optString("type") != "dialogue.page" ||
+            response.optString("deviceId") != device.id || response.optString("projectId") != projectId ||
+            response.optString("sessionId") != sessionId || response.optInt("after", -1) != after
+        ) invalidResponse()
+        return response
+    }
+
+    fun acknowledgeDialogue(
+        endpoint: DesktopEndpoint,
+        device: DesktopDevice,
+        credential: DesktopCredential,
+        projectId: String,
+        sessionId: String,
+        through: Int,
+    ) {
+        val request = dialogueEnvelope("dialogue.ack", device, projectId, sessionId).put("through", through)
+        val response = postDialogue(endpoint, "/v1/dialogue/ack", request, credential)
+        if (response.optString("type") != "dialogue.ack" ||
+            response.optString("deviceId") != device.id || response.optString("projectId") != projectId ||
+            response.optString("sessionId") != sessionId || response.optInt("through", -1) < through
+        ) invalidResponse()
+    }
+
+    private fun dialogueEnvelope(type: String, device: DesktopDevice, projectId: String, sessionId: String) =
+        JSONObject().put("dialogueVersion", 1).put("deviceId", device.id).put("projectId", projectId)
+            .put("sessionId", sessionId).put("type", type)
+
+    private fun postDialogue(
+        endpoint: DesktopEndpoint,
+        path: String,
+        request: JSONObject,
+        credential: DesktopCredential,
+    ): JSONObject {
+        val json = request.toString()
+        DialogueProtocol.parse(json)
+        val (status, raw) = try {
+            postRaw(endpoint, path, json, credential.token, credential.id)
+        } catch (failure: DesktopFailure) {
+            if (failure.code != "DESKTOP_INTERRUPTED") throw failure
+            // A pull or acknowledgement can safely be repeated if the response was lost.
+            postRaw(endpoint, path, json, credential.token, credential.id)
+        }
+        val response = try {
+            DialogueProtocol.parse(raw)
+        } catch (_: MessageProtocol.ProtocolException) {
+            throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
+        }
+        if (listOf("deviceId", "projectId", "sessionId").any { response.getString(it) != request.getString(it) }) {
+            invalidResponse()
+        }
+        if (status in 400..599 && response.optString("type") == "dialogue.error") {
+            val code = response.getString("code")
+            val retryable = code in setOf("RATE_LIMITED", "INTERNAL_ERROR", "MODEL_TIMEOUT", "MODEL_UNAVAILABLE")
+            throw DesktopFailure(code, retryable)
+        }
+        if (status != 200 || response.optString("type") == "dialogue.error") invalidResponse()
+        return response
+    }
+
     private fun envelope(operation: String, createdAt: String): JSONObject = JSONObject()
         .put("schemaVersion", MessageProtocol.SCHEMA_VERSION)
         .put("requestId", UUID.randomUUID().toString())
@@ -153,6 +224,38 @@ internal class DesktopMessageClient {
     ): Pair<Int, MessageProtocol.ParsedEnvelope> {
         val json = request.toString()
         MessageProtocol.parse(json)
+        val (status, raw) = postRaw(endpoint, path, json, token, null, responseTimeout)
+        val response = try {
+            MessageProtocol.parse(raw)
+        } catch (_: MessageProtocol.ProtocolException) {
+            throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
+        }
+        val error = response.json.optJSONObject("error")
+        // The receiver rate-limits pairing before it reads the request ID.
+        if (path == "/v1/pair" && status == 429 && error?.getString("code") == "PAIRING_RATE_LIMITED") {
+            throw DesktopFailure("PAIRING_RATE_LIMITED")
+        }
+        if (response.json.optString("inReplyTo") != request.getString("requestId")) {
+            throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
+        }
+        if (status == 403 && response.operation == "pair.revoked" && token != null &&
+            response.json.getString("deviceId") == request.getString("deviceId") &&
+            response.json.getString("credentialId") == request.getString("credentialId")
+        ) throw DesktopFailure("DEVICE_REVOKED")
+        if (status in 400..599 && response.operation == "error" && error != null) {
+            throw DesktopFailure(error.getString("code"), error.getBoolean("retryable"), error.optInt("retryAfterSeconds"))
+        }
+        return status to response
+    }
+
+    private fun postRaw(
+        endpoint: DesktopEndpoint,
+        path: String,
+        json: String,
+        token: String? = null,
+        credentialId: String? = null,
+        responseTimeout: Int = 15_000,
+    ): Pair<Int, String> {
         val body = json.toByteArray(Charsets.UTF_8)
         val pin = PinnedCertificate(endpoint.fingerprint)
         val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(pin), null) }
@@ -171,6 +274,7 @@ internal class DesktopMessageClient {
                         append("POST $path HTTP/1.1\r\nHost: ${endpoint.host}:${endpoint.port}\r\n")
                         append("Content-Type: application/json\r\nContent-Length: ${body.size}\r\nConnection: close\r\n")
                         if (token != null) append("Authorization: Bearer $token\r\n")
+                        if (credentialId != null) append("X-Credential-Id: $credentialId\r\n")
                         append("\r\n")
                     }
                     val output = BufferedOutputStream(tls.outputStream)
@@ -197,28 +301,11 @@ internal class DesktopMessageClient {
             throw DesktopFailure(if (handshakeComplete) "DESKTOP_INTERRUPTED" else "DESKTOP_UNREACHABLE", retryable = true)
         } catch (_: IOException) {
             throw DesktopFailure("DESKTOP_UNREACHABLE", retryable = true)
-        } catch (_: MessageProtocol.ProtocolException) {
-            throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
-        }
-        val error = response.json.optJSONObject("error")
-        // The receiver rate-limits pairing before it reads the request ID.
-        if (path == "/v1/pair" && status == 429 && error?.getString("code") == "PAIRING_RATE_LIMITED") {
-            throw DesktopFailure("PAIRING_RATE_LIMITED")
-        }
-        if (response.json.optString("inReplyTo") != request.getString("requestId")) {
-            throw DesktopFailure("DESKTOP_RESPONSE", retryable = true)
-        }
-        if (status == 403 && response.operation == "pair.revoked" && token != null &&
-            response.json.getString("deviceId") == request.getString("deviceId") &&
-            response.json.getString("credentialId") == request.getString("credentialId")
-        ) throw DesktopFailure("DEVICE_REVOKED")
-        if (status in 400..599 && response.operation == "error" && error != null) {
-            throw DesktopFailure(error.getString("code"), error.getBoolean("retryable"), error.optInt("retryAfterSeconds"))
         }
         return status to response
     }
 
-    private fun readResponse(input: DataInputStream, first: Int): Pair<Int, MessageProtocol.ParsedEnvelope> {
+    private fun readResponse(input: DataInputStream, first: Int): Pair<Int, String> {
         val statusLine = readLine(input, first)
         val status = Regex("HTTP/1\\.[01] ([1-5][0-9]{2})(?: .*)?")
             .matchEntire(statusLine)?.groupValues?.get(1)?.toInt() ?: invalidResponse()
@@ -234,7 +321,7 @@ internal class DesktopMessageClient {
                 val bytes = ByteArray(length)
                 input.readFully(bytes)
                 val json = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()
-                return status to MessageProtocol.parse(json)
+                return status to json
             }
             val name = line.substringBefore(':').lowercase(Locale.ROOT)
             if (':' !in line || headers.put(name, line.substringAfter(':').trim()) != null) invalidResponse()
