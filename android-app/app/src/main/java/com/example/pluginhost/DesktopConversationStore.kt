@@ -25,7 +25,7 @@ internal data class QueuedMessage(
 )
 
 internal class DesktopConversationStore(context: Context, name: String = "desktop-conversations.db") :
-    SQLiteOpenHelper(context, File(context.noBackupFilesDir, name).absolutePath, null, 2) {
+    SQLiteOpenHelper(context, File(context.noBackupFilesDir, name).absolutePath, null, 3) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
@@ -59,17 +59,18 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
             """.trimIndent(),
         )
         createDialogueTable(db)
+        createDialogueSubmissionsTable(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(oldVersion == 1 && newVersion == 2)
-        createDialogueTable(db)
+        if (oldVersion < 2) createDialogueTable(db)
+        if (oldVersion < 3) createDialogueSubmissionsTable(db)
     }
 
     private fun createDialogueTable(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE dialogue_events (
+            CREATE TABLE IF NOT EXISTS dialogue_events (
                 session_id TEXT NOT NULL REFERENCES messages(id),
                 sequence INTEGER NOT NULL CHECK (sequence BETWEEN 1 AND 2147483647),
                 event_id TEXT NOT NULL,
@@ -78,6 +79,82 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
                 UNIQUE (session_id, event_id)
             )
             """.trimIndent(),
+        )
+    }
+
+    private fun createDialogueSubmissionsTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS dialogue_submissions (
+                session_id TEXT PRIMARY KEY REFERENCES messages(id),
+                sequence INTEGER NOT NULL DEFAULT 0 CHECK (sequence BETWEEN 0 AND 2147483647),
+                pending_payload TEXT
+            )
+            """.trimIndent(),
+        )
+    }
+
+    fun queueDialogueSubmission(message: QueuedMessage, type: String, head: JSONObject, text: String?): JSONObject {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val current = db.rawQuery(
+                "SELECT sequence, pending_payload FROM dialogue_submissions WHERE session_id = ?",
+                arrayOf(message.id),
+            ).use { if (it.moveToFirst()) it.getInt(0) to (if (it.isNull(1)) null else it.getString(1)) else 0 to null }
+            current.second?.let { return JSONObject(it) }
+            val sequence = current.first + 1
+            if (sequence > Int.MAX_VALUE) throw DesktopFailure("EVENT_SEQUENCE_CONFLICT")
+            val event = JSONObject()
+                .put("dialogueVersion", 1)
+                .put("deviceId", head.getString("deviceId"))
+                .put("projectId", message.projectId)
+                .put("sessionId", message.id)
+                .put("type", type)
+                .put("eventId", UUID.randomUUID().toString())
+                .put("sequence", sequence)
+                .put("createdAt", messageTimestamp())
+                .put("messageId", message.id)
+                .put("inReplyTo", head.getString("eventId"))
+            if (type != "phone.cancel") {
+                event.put("specVersion", head.getInt("specVersion"))
+                    .put("specSha256", head.getString("specSha256"))
+                    .put("text", text?.trim().orEmpty())
+            }
+            DialogueProtocol.parse(event.toString())
+            db.insertWithOnConflict("dialogue_submissions", null, ContentValues().apply {
+                put("session_id", message.id)
+                put("sequence", sequence)
+                put("pending_payload", event.toString())
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            db.setTransactionSuccessful()
+            return event
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun pendingDialogueSubmission(sessionId: String): JSONObject? = readableDatabase.rawQuery(
+        "SELECT pending_payload FROM dialogue_submissions WHERE session_id = ? AND pending_payload IS NOT NULL",
+        arrayOf(sessionId),
+    ).use { if (it.moveToFirst()) JSONObject(it.getString(0)) else null }
+
+    fun acceptDialogueSubmission(sessionId: String, eventId: String) {
+        val db = writableDatabase
+        val pending = pendingDialogueSubmission(sessionId) ?: return
+        if (pending.optString("eventId") != eventId) return
+        db.execSQL("UPDATE dialogue_submissions SET pending_payload = NULL WHERE session_id = ? AND pending_payload = ?",
+            arrayOf(sessionId, pending.toString()))
+    }
+
+    fun discardDialogueSubmission(sessionId: String, eventId: String) {
+        val db = writableDatabase
+        val pending = pendingDialogueSubmission(sessionId) ?: return
+        if (pending.optString("eventId") != eventId) return
+        db.execSQL(
+            "UPDATE dialogue_submissions SET sequence = sequence - 1, pending_payload = NULL " +
+                "WHERE session_id = ? AND sequence = ? AND pending_payload = ?",
+            arrayOf(sessionId, pending.optInt("sequence"), pending.toString()),
         )
     }
 

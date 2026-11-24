@@ -178,10 +178,12 @@ def desktop(home):
         assert invalid["code"] == "EVENT_SEQUENCE_CONFLICT"
         stale = post(receiver, "submit", {**cancel, "inReplyTo": str(uuid4())}, phone, expected=409)
         assert stale["code"] == "STALE_EVENT"
-        answer = {**cancel, "type": "phone.answer", "text": "Synthetic answer", **spec}
-        assert post(receiver, "submit", answer, phone, expected=409)["code"] == "INVALID_STATE"
         assert not post(receiver, "submit", cancel, phone)["duplicate"]
         assert post(receiver, "submit", cancel, phone)["duplicate"]
+        cancelled_head = pull(receiver, key, phone, after=end)["events"][-1]
+        answer = {**cancel, "eventId": str(uuid4()), "sequence": 2, "type": "phone.answer",
+                  "inReplyTo": cancelled_head["eventId"], "text": "Synthetic answer", **spec}
+        assert post(receiver, "submit", answer, phone, expected=409)["code"] == "INVALID_STATE"
         conflict = post(receiver, "submit", {**cancel, "sequence": 2}, phone, expected=409)
         assert conflict["code"] == "EVENT_ID_CONFLICT"
         wait_call(home, same_project["messageId"])

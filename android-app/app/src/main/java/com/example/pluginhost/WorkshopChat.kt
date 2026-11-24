@@ -552,7 +552,7 @@ private fun WorkshopThread(
                 verticalArrangement = Arrangement.spacedBy(18.dp, Alignment.Top),
             ) {
                 items(messages.asReversed(), key = { it.id }) { item ->
-                    WorkshopTurn(item, session.dialogueHeads[item.id], session.sendingId == item.id, project.id)
+                    WorkshopTurn(session, item, session.dialogueHeads[item.id], session.sendingId == item.id, project.id)
                 }
             }
         }
@@ -570,7 +570,13 @@ private fun WorkshopThread(
 }
 
 @Composable
-private fun WorkshopTurn(message: QueuedMessage, event: JSONObject?, sending: Boolean, projectId: String) {
+private fun WorkshopTurn(
+    session: DesktopConversationSession,
+    message: QueuedMessage,
+    event: JSONObject?,
+    sending: Boolean,
+    projectId: String,
+) {
     val colors = MaterialTheme.colorScheme
     var details by rememberSaveable { mutableStateOf(false) }
     val delivery = when {
@@ -629,6 +635,49 @@ private fun WorkshopTurn(message: QueuedMessage, event: JSONObject?, sending: Bo
                     SelectionContainer {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             DesktopDialogueState(event)
+                            if (message.delivery == Delivery.RECEIVED && event.optString("type") == "desktop.question") {
+                                var answer by remember(event.optString("eventId")) { mutableStateOf("") }
+                                OutlinedTextField(
+                                    value = answer,
+                                    onValueChange = { if (it.length <= 12_000) answer = it },
+                                    label = { Text("补充信息") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    enabled = !session.busy,
+                                    minLines = 2,
+                                    maxLines = 5,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        enabled = !session.busy && answer.isNotBlank(),
+                                        onClick = { session.submitDialogue(message, event, "phone.answer", answer) },
+                                    ) { Text("提交回答") }
+                                    TextButton(
+                                        enabled = !session.busy,
+                                        onClick = { session.submitDialogue(message, event, "phone.cancel") },
+                                    ) { Text("取消本轮") }
+                                }
+                            } else if (message.delivery == Delivery.RECEIVED && event.optString("type") == "desktop.review") {
+                                var revision by remember(event.optString("eventId")) { mutableStateOf("") }
+                                OutlinedTextField(
+                                    value = revision,
+                                    onValueChange = { if (it.length <= 12_000) revision = it },
+                                    label = { Text("补充需求或要求修改") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    enabled = !session.busy,
+                                    minLines = 2,
+                                    maxLines = 5,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        enabled = !session.busy && revision.isNotBlank(),
+                                        onClick = { session.submitDialogue(message, event, "phone.revise", revision) },
+                                    ) { Text("请求修订") }
+                                    TextButton(
+                                        enabled = !session.busy,
+                                        onClick = { session.submitDialogue(message, event, "phone.cancel") },
+                                    ) { Text("取消本轮") }
+                                }
+                            }
                         }
                     }
                 }

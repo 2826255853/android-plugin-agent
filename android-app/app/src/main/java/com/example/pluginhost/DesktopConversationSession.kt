@@ -137,6 +137,30 @@ internal class DesktopConversationSession private constructor(context: Context) 
 
     fun refreshDialogue() = work { syncDialogue() }
 
+    fun submitDialogue(message: QueuedMessage, head: JSONObject, type: String, text: String? = null) = work {
+        val selected = project ?: return@work
+        val current = link ?: return@work
+        val identity = device ?: return@work
+        if (message.delivery != Delivery.RECEIVED || selected.id != message.projectId ||
+            current.endpoint.fingerprint != selected.fingerprint || current.blockedReason != null
+        ) throw DesktopFailure("INVALID_STATE")
+        if (type != "phone.cancel" && text.isNullOrBlank()) throw DesktopFailure("MESSAGE_BODY")
+        val event = io { store.queueDialogueSubmission(message, type, head, text) }
+        try {
+            io {
+                requireNetwork(current.endpoint)
+                client.submitDialogue(current.endpoint, credential(), event)
+                store.acceptDialogueSubmission(message.id, event.getString("eventId"))
+            }
+        } catch (failure: DesktopFailure) {
+            if (!failure.retryable) {
+                io { store.discardDialogueSubmission(message.id, event.getString("eventId")) }
+            }
+            throw failure
+        }
+        syncDialogue()
+    }
+
     private suspend fun syncDialogue() {
         val selected = project ?: return
         val identity = device ?: return
@@ -153,6 +177,18 @@ internal class DesktopConversationSession private constructor(context: Context) 
                 var missing = false
                 for (message in received) {
                     try {
+                        val pending = store.pendingDialogueSubmission(message.id)
+                        if (pending != null) {
+                            try {
+                                client.submitDialogue(current.endpoint, credential, pending)
+                                store.acceptDialogueSubmission(message.id, pending.getString("eventId"))
+                            } catch (failure: DesktopFailure) {
+                                if (!failure.retryable) {
+                                    store.discardDialogueSubmission(message.id, pending.getString("eventId"))
+                                }
+                                throw failure
+                            }
+                        }
                         var through = localHeads[message.id]?.getInt("sequence") ?: 0
                         do {
                             val page = client.pullDialogue(current.endpoint, identity, credential, selected.id, message.id, through)

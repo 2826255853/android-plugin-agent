@@ -9,7 +9,7 @@ from time import monotonic
 from typing import Protocol
 from uuid import UUID
 
-from dialogue_draft import DRAFT_PROMPT_VERSION, mock_draft
+from dialogue_draft import DRAFT_PROMPT_VERSION, MOCK_NOTES_REQUEST, mock_draft
 from dialogue_protocol import strict_object
 from message_protocol import PROJECT_ID, ProtocolError
 
@@ -146,6 +146,10 @@ class ModelBoundary:
         with self._lock:
             return self._receipts.get(request_id)
 
+    def has_request(self, request_id: UUID) -> bool:
+        with self._lock:
+            return request_id in self._receipts
+
     def call(self, request: Request, cancellation: Event | None = None) -> Result:
         cancellation = cancellation if cancellation is not None else Event()
         self._validate(request)
@@ -262,6 +266,19 @@ class ModelBoundary:
 class MockProvider:
     def invoke(self, request: Request, stop: Event) -> ProviderReply:
         if request.prompt_version == DRAFT_PROMPT_VERSION:
-            draft = mock_draft(strict_object(request.input_text)["userMessage"])
+            input_value = strict_object(request.input_text)
+            draft = mock_draft(input_value["userMessage"])
+            user_input = input_value.get("userInput")
+            if user_input is not None:
+                previous = input_value["previousDraft"]
+                answer = user_input["text"]
+                if user_input["type"] == "phone.revise":
+                    draft = mock_draft(MOCK_NOTES_REQUEST)
+                    draft["goal"] = previous["goal"] or answer
+                elif not previous.get("goal", "").strip():
+                    draft = {**previous, "goal": answer}
+                elif previous.get("storesData") is None:
+                    draft = mock_draft(MOCK_NOTES_REQUEST)
+                    draft["goal"] = previous["goal"] or answer
             return ProviderReply(dumps(draft, ensure_ascii=False), Usage(24, 12))
         return ProviderReply('{"goal":"Keep short notes","storesData":true}', Usage(24, 12))

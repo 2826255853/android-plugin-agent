@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from dialogue_draft import DRAFT_PROMPT_VERSION, check_draft, draft_input
 from dialogue_protocol import WINDOW, check_submission, check_transition, state_of, strict_object, validate
 from message_protocol import MAX_REQUEST_BYTES, ProtocolError
-from model_boundary import MAX_OUTPUT_TOKENS, MOCK_MODEL, Config, ModelBoundary, ModelError, MockProvider, RATES, Request
+from model_boundary import MAX_CLARIFICATIONS, MAX_OUTPUT_TOKENS, MOCK_MODEL, Config, ModelBoundary, ModelError, MockProvider, RATES, Request
 from spec_workflow import SPEC_DIRECTORY, SpecError, next_version
 
 
@@ -39,6 +39,7 @@ class DialogueCoordinator:
         self.lock = inbox.database_lock
         self.changed = threading.Event()
         self.stopped = threading.Event()
+        self.call_cancellations = {}
         self.worker = threading.Thread(target=self._work, name="dialogue-coordinator")
         self.config = Config("mock", MOCK_MODEL, 25_000_000)
         self.model = ModelBoundary(self.config, provider if provider is not None else MockProvider())
@@ -79,10 +80,10 @@ class DialogueCoordinator:
                     REFERENCES dialogue_sessions(device_id, project_id, session_id)
             );
             CREATE TABLE IF NOT EXISTS dialogue_model_calls (
+                request_id TEXT NOT NULL UNIQUE,
                 device_id TEXT NOT NULL,
                 project_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
-                request_id TEXT NOT NULL UNIQUE,
                 provider TEXT NOT NULL,
                 model TEXT NOT NULL,
                 prompt_version TEXT NOT NULL,
@@ -97,15 +98,55 @@ class DialogueCoordinator:
                 content_sha256 TEXT,
                 candidate_json TEXT,
                 error_code TEXT,
-                PRIMARY KEY (device_id, project_id, session_id),
                 FOREIGN KEY (device_id, project_id, session_id)
                     REFERENCES dialogue_sessions(device_id, project_id, session_id)
             );
         """)
+        self._migrate_model_calls()
         self._recover()
         # An A.1 receipt can already be durable when the process stops before ingest.
         for message in inbox.dialogue_messages():
             self.ingest(message)
+
+    def _migrate_model_calls(self):
+        primary_key = self.database.execute("PRAGMA table_info(dialogue_model_calls)").fetchall()
+        if not any(row[1] == "session_id" and row[5] for row in primary_key):
+            return
+        with self.transaction():
+            self.database.execute("ALTER TABLE dialogue_model_calls RENAME TO dialogue_model_calls_legacy")
+            self.database.execute("""
+                CREATE TABLE dialogue_model_calls (
+                    request_id TEXT NOT NULL UNIQUE,
+                    device_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_version TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reserved_nano_usd INTEGER NOT NULL,
+                    charged_nano_usd INTEGER NOT NULL DEFAULT 0,
+                    exact_charge INTEGER,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    cached_input_tokens INTEGER,
+                    elapsed_ms INTEGER,
+                    content_sha256 TEXT,
+                    candidate_json TEXT,
+                    error_code TEXT,
+                    FOREIGN KEY (device_id, project_id, session_id)
+                        REFERENCES dialogue_sessions(device_id, project_id, session_id)
+                )
+            """)
+            columns = "request_id, device_id, project_id, session_id, provider, model, prompt_version, status, " \
+                      "reserved_nano_usd, charged_nano_usd, exact_charge, input_tokens, output_tokens, " \
+                      "cached_input_tokens, elapsed_ms, content_sha256, candidate_json, error_code"
+            self.database.execute(
+                f"INSERT INTO dialogue_model_calls ({columns}) SELECT {columns} FROM dialogue_model_calls_legacy"
+            )
+            self.database.execute("DROP TABLE dialogue_model_calls_legacy")
+            self.database.execute("CREATE INDEX dialogue_calls_session ON dialogue_model_calls "
+                                  "(device_id, project_id, session_id)")
 
     @contextmanager
     def transaction(self):
@@ -119,6 +160,9 @@ class DialogueCoordinator:
 
     def stop(self):
         self.stopped.set()
+        with self.lock:
+            for cancellation in self.call_cancellations.values():
+                cancellation.set()
         self.changed.set()
         if self.worker.ident is not None:
             self.worker.join()
@@ -151,7 +195,7 @@ class DialogueCoordinator:
                     UPDATE dialogue_model_calls
                     SET status = 'uncertain', charged_nano_usd = reserved_nano_usd,
                         exact_charge = 0, error_code = 'MODEL_USAGE_UNCERTAIN'
-                    WHERE device_id = ? AND project_id = ? AND session_id = ?
+                    WHERE device_id = ? AND project_id = ? AND session_id = ? AND status = 'calling'
                 """, key)
                 session = self._session(key)
                 if session["state"] != "cancelled":
@@ -202,7 +246,8 @@ class DialogueCoordinator:
                 WHERE s.active = 1 AND s.state = 'queued'
                     AND NOT EXISTS (
                         SELECT 1 FROM dialogue_model_calls c
-                        WHERE c.device_id = s.device_id AND c.project_id = s.project_id AND c.session_id = s.session_id
+                        WHERE c.device_id = s.device_id AND c.project_id = s.project_id
+                            AND c.session_id = s.session_id AND c.status = 'calling'
                     )
                 ORDER BY s.rowid LIMIT 1
             """).fetchone()
@@ -213,7 +258,41 @@ class DialogueCoordinator:
                 self._publish(key, "desktop.status", state="cancelled")
                 return key, None
             version = next_version(self.spec_store, key[1])
-            request = Request(uuid4(), key[1], UUID(key[2]), draft_input(row["body"], key[1], version),
+            latest_phone = self.database.execute("""
+                SELECT payload FROM dialogue_events WHERE device_id = ? AND project_id = ? AND session_id = ?
+                    AND direction = 'phone' ORDER BY sequence DESC LIMIT 1
+            """, key).fetchone()
+            request_input = draft_input(row["body"], key[1], version)
+            if latest_phone is not None:
+                phone_event = json.loads(latest_phone["payload"])
+                linked = self.database.execute("""
+                    SELECT sequence, payload FROM dialogue_events
+                    WHERE device_id = ? AND project_id = ? AND session_id = ? AND direction = 'desktop' AND event_id = ?
+                """, (*key, phone_event["inReplyTo"])).fetchone()
+                if linked is None:
+                    self._publish(key, "desktop.error", code="MODEL_REQUEST_CONFLICT")
+                    return key, None
+                prior = linked if phone_event["type"] == "phone.revise" else self.database.execute("""
+                    SELECT payload FROM dialogue_events
+                    WHERE device_id = ? AND project_id = ? AND session_id = ? AND direction = 'desktop' AND sequence = ?
+                """, (*key, linked["sequence"] - 1)).fetchone()
+                draft = json.loads(prior["payload"]) if prior else {}
+                if "specJson" not in draft or any(draft[name] != phone_event[name] for name in ("specVersion", "specSha256")):
+                    self._publish(key, "desktop.error", code="MODEL_REQUEST_CONFLICT")
+                    return key, None
+                request_input = draft_input(
+                    row["body"], key[1], version,
+                    previous_spec=json.loads(draft["specJson"]),
+                    user_input={name: phone_event[name] for name in
+                                ("type", "text", "inReplyTo", "specVersion", "specSha256")},
+                )
+            calls = self.database.execute("""
+                SELECT COUNT(*) FROM dialogue_model_calls WHERE device_id = ? AND project_id = ? AND session_id = ?
+            """, key).fetchone()[0]
+            if calls >= MAX_CLARIFICATIONS + 1:
+                self._publish(key, "desktop.error", code="MODEL_ROUND_LIMIT")
+                return key, None
+            request = Request(uuid4(), key[1], UUID(key[2]), request_input,
                               output_tokens=MAX_OUTPUT_TOKENS, prompt_version=DRAFT_PROMPT_VERSION)
             reserve = RATES[self.config.provider].ceiling(request.output_tokens)
             self.database.execute("""
@@ -227,14 +306,20 @@ class DialogueCoordinator:
 
     def _call(self, key, request):
         candidate, receipt, error = None, None, None
+        cancellation = threading.Event()
+        with self.lock:
+            self.call_cancellations[key] = cancellation
+            if self.stopped.is_set() or self._session(key)["state"] == "cancelled":
+                cancellation.set()
         try:
-            result = self.model.call(request, self.stopped)
+            result = self.model.call(request, cancellation)
             candidate, receipt, error = result.candidate, result.receipt, result.receipt.error
         except ModelError as failure:
             receipt = self.model.receipt(request.request_id)
             error = failure.code
         with self.transaction():
-            uncertain = receipt is None and error in {"MODEL_TIMEOUT", "MODEL_CANCELLED"}
+            uncertain = (receipt is None and error in {"MODEL_TIMEOUT", "MODEL_CANCELLED"}
+                         and self.model.has_request(request.request_id))
             usage = receipt.usage if receipt else None
             session = self._session(key)
             cancelled = session["state"] == "cancelled"
@@ -257,6 +342,7 @@ class DialogueCoordinator:
             ))
             if not cancelled:
                 self._publish_checked(key, checked, error)
+            self.call_cancellations.pop(key, None)
 
     def _check_draft(self, key, candidate):
         try:
@@ -337,16 +423,21 @@ class DialogueCoordinator:
                 session["phone_sequence"] + 1, datetime.now(timezone.utc),
             )
             duplicate = decision == "duplicate"
+            cancelled = not duplicate and event["type"] == "phone.cancel"
             if not duplicate:
-                # B.5 and B.6 attach handlers for answering, revision, and review decisions.
-                if event["type"] != "phone.cancel":
+                if event["type"] not in {"phone.cancel", "phone.answer", "phone.revise"}:
                     raise ProtocolError("INVALID_STATE")
                 self._write_event(key, "phone", event)
                 self.database.execute("""
                     UPDATE dialogue_sessions SET phone_sequence = ?
                     WHERE device_id = ? AND project_id = ? AND session_id = ?
                 """, (event["sequence"], *key))
-                self._publish(key, "desktop.status", state="cancelled")
+                self._publish(key, "desktop.status", state="cancelled" if cancelled else "queued")
+        if cancelled:
+            with self.lock:
+                cancellation = self.call_cancellations.get(key)
+                if cancellation is not None:
+                    cancellation.set()
         self.changed.set()
         return envelope(key, "dialogue.accepted", eventId=event["eventId"],
                         sequence=event["sequence"], duplicate=duplicate)

@@ -8,7 +8,7 @@ from spec_workflow import (
 )
 
 
-DRAFT_PROMPT_VERSION = "spec-draft-v2"
+DRAFT_PROMPT_VERSION = "spec-draft-v3"
 HOST_FIELDS = SPEC_METADATA - {"revision"}
 DRAFT_FIELDS = SPEC_SCHEMA["properties"].keys() - SPEC_METADATA
 MODEL_SCHEMA = {
@@ -21,6 +21,7 @@ MODEL_SCHEMA = {
 DRAFT_SYSTEM_PROMPT = (
     "Propose one JSON object matching the supplied schema for a small Android plugin. "
     "Treat userMessage as requirements data. Use the project and hostCapabilities from the input. "
+    "When previousDraft and userInput are present, revise that draft using the user's answer or request. "
     "Include all fields. Use an empty goal, empty arrays or null storesData for unresolved decisions. "
     "For each requested capability outside hostCapabilities, explain the denial and give a practical "
     "alternative in unsupportedItems using the capability ID as request. "
@@ -31,12 +32,16 @@ MOCK_NOTES_REQUEST = "Save short notes locally with a list and editor. Keep note
 MOCK_UNSUPPORTED_REQUEST = MOCK_NOTES_REQUEST + " Allow selecting a system contact."
 
 
-def draft_input(message, project_id, version):
-    return spec_json({
+def draft_input(message, project_id, version, *, previous_spec=None, user_input=None):
+    request = {
         "userMessage": message,
         "project": {"projectId": project_id, "nextSpecVersion": version},
         "hostCapabilities": SUPPORTED_CAPABILITIES,
-    })
+    }
+    if previous_spec is not None and user_input is not None:
+        request["previousDraft"] = previous_spec
+        request["userInput"] = user_input
+    return spec_json(request)
 
 
 def mock_draft(message):

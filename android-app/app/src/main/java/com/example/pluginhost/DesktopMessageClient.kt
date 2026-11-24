@@ -173,6 +173,18 @@ internal class DesktopMessageClient {
         ) invalidResponse()
     }
 
+    fun submitDialogue(
+        endpoint: DesktopEndpoint,
+        credential: DesktopCredential,
+        event: JSONObject,
+    ) {
+        val response = postDialogue(endpoint, "/v1/dialogue/submit", event, credential)
+        if (response.optString("type") != "dialogue.accepted" ||
+            response.optString("eventId") != event.optString("eventId") ||
+            response.optInt("sequence", -1) != event.optInt("sequence")
+        ) invalidResponse()
+    }
+
     private fun dialogueEnvelope(type: String, device: DesktopDevice, projectId: String, sessionId: String) =
         JSONObject().put("dialogueVersion", 1).put("deviceId", device.id).put("projectId", projectId)
             .put("sessionId", sessionId).put("type", type)
