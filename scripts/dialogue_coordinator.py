@@ -8,9 +8,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from dialogue_protocol import check_submission, check_transition, state_of, validate
+from dialogue_draft import DRAFT_PROMPT_VERSION, check_draft, draft_input
+from dialogue_protocol import WINDOW, check_submission, check_transition, state_of, strict_object, validate
 from message_protocol import MAX_REQUEST_BYTES, ProtocolError
-from model_boundary import MOCK_MODEL, PROMPT_VERSION, Config, ModelBoundary, ModelError, MockProvider, RATES, Request
+from model_boundary import MAX_OUTPUT_TOKENS, MOCK_MODEL, Config, ModelBoundary, ModelError, MockProvider, RATES, Request
+from spec_workflow import SPEC_DIRECTORY, SpecError, next_version
 
 
 def timestamp():
@@ -32,7 +34,7 @@ def envelope(key, kind, **fields):
 
 
 class DialogueCoordinator:
-    def __init__(self, inbox, provider=None):
+    def __init__(self, inbox, provider=None, *, spec_store=SPEC_DIRECTORY / "projects"):
         self.database = inbox.database
         self.lock = inbox.database_lock
         self.changed = threading.Event()
@@ -40,6 +42,7 @@ class DialogueCoordinator:
         self.worker = threading.Thread(target=self._work, name="dialogue-coordinator")
         self.config = Config("mock", MOCK_MODEL, 25_000_000)
         self.model = ModelBoundary(self.config, provider if provider is not None else MockProvider())
+        self.spec_store = spec_store
         self.database.executescript("""
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS dialogue_sessions (
@@ -154,6 +157,24 @@ class DialogueCoordinator:
                 if session["state"] != "cancelled":
                     self._publish(key, "desktop.error", code="MODEL_USAGE_UNCERTAIN")
 
+            legacy_calls = self.database.execute("""
+                SELECT c.device_id, c.project_id, c.session_id, c.request_id, c.candidate_json
+                FROM dialogue_model_calls c JOIN dialogue_sessions s USING (device_id, project_id, session_id)
+                WHERE c.status = 'completed' AND c.candidate_json IS NOT NULL AND s.state = 'running'
+            """).fetchall()
+            for row in legacy_calls:
+                key = tuple(row)[:3]
+                try:
+                    candidate = strict_object(row["candidate_json"])
+                except ProtocolError:
+                    candidate = None
+                checked, error = self._check_draft(key, candidate)
+                self._publish_checked(key, checked, error)
+                self.database.execute("""
+                    UPDATE dialogue_model_calls SET status = ?, candidate_json = NULL, error_code = ?
+                    WHERE request_id = ?
+                """, ("failed" if error else "completed", error, row["request_id"]))
+
     def _work(self):
         while not self.stopped.is_set():
             self.changed.wait()
@@ -191,14 +212,16 @@ class DialogueCoordinator:
             if row["body"] is None:
                 self._publish(key, "desktop.status", state="cancelled")
                 return key, None
-            request = Request(uuid4(), key[1], UUID(key[2]), row["body"])
+            version = next_version(self.spec_store, key[1])
+            request = Request(uuid4(), key[1], UUID(key[2]), draft_input(row["body"], key[1], version),
+                              output_tokens=MAX_OUTPUT_TOKENS, prompt_version=DRAFT_PROMPT_VERSION)
             reserve = RATES[self.config.provider].ceiling(request.output_tokens)
             self.database.execute("""
                 INSERT INTO dialogue_model_calls (
                     device_id, project_id, session_id, request_id, provider, model,
                     prompt_version, status, reserved_nano_usd
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'calling', ?)
-            """, (*key, str(request.request_id), self.config.provider, self.config.model, PROMPT_VERSION, reserve))
+            """, (*key, str(request.request_id), self.config.provider, self.config.model, request.prompt_version, reserve))
             self._publish(key, "desktop.status", state="running")
             return key, request
 
@@ -215,11 +238,14 @@ class DialogueCoordinator:
             usage = receipt.usage if receipt else None
             session = self._session(key)
             cancelled = session["state"] == "cancelled"
+            checked = None
+            if not error and not cancelled:
+                checked, error = self._check_draft(key, candidate)
             self.database.execute("""
                 UPDATE dialogue_model_calls SET status = ?, exact_charge = ?,
                     charged_nano_usd = CASE WHEN ? THEN reserved_nano_usd ELSE ? END,
                     input_tokens = ?, output_tokens = ?, cached_input_tokens = ?, elapsed_ms = ?,
-                    content_sha256 = ?, candidate_json = ?, error_code = ?
+                    content_sha256 = ?, error_code = ?
                 WHERE request_id = ? AND status = 'calling'
             """, (
                 "uncertain" if uncertain else "failed" if error else "completed",
@@ -227,11 +253,30 @@ class DialogueCoordinator:
                 receipt.charged_nano_usd if receipt else 0, usage.input_tokens if usage else None,
                 usage.output_tokens if usage else None, usage.cached_input_tokens if usage else None,
                 receipt.elapsed_ms if receipt else None, receipt.content_sha256 if receipt else None,
-                encode(candidate) if candidate is not None and not cancelled else None,
                 error, str(request.request_id),
             ))
-            if error and not cancelled:
-                self._publish(key, "desktop.error", code=error)
+            if not cancelled:
+                self._publish_checked(key, checked, error)
+
+    def _check_draft(self, key, candidate):
+        try:
+            version = next_version(self.spec_store, key[1])
+            return check_draft(candidate, key[1], version, self.spec_store), None
+        except SpecError:
+            return None, "MODEL_INVALID_OUTPUT"
+
+    def _publish_checked(self, key, checked, error):
+        if error:
+            self._publish(key, "desktop.error", code=error)
+            return
+        fields, decision = checked
+        expires_at = (datetime.now(timezone.utc) + WINDOW).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        if "question" in decision:
+            self._publish(key, "desktop.draft", **fields)
+            self._publish(key, "desktop.question", expiresAt=expires_at, **decision,
+                          specVersion=fields["specVersion"], specSha256=fields["specSha256"])
+        else:
+            self._publish(key, "desktop.review", expiresAt=expires_at, **fields, **decision)
 
     def pull(self, request):
         key, after = scope(request), request["after"]
@@ -305,19 +350,6 @@ class DialogueCoordinator:
         self.changed.set()
         return envelope(key, "dialogue.accepted", eventId=event["eventId"],
                         sequence=event["sequence"], duplicate=duplicate)
-
-    def publish_draft(self, key, kind, **fields):
-        """Persist a draft, question, or review released by the deterministic spec stage."""
-        if kind not in {"desktop.draft", "desktop.question", "desktop.review"}:
-            raise ProtocolError("INVALID_REQUEST")
-        with self.transaction():
-            completed = self.database.execute("""
-                SELECT 1 FROM dialogue_model_calls
-                WHERE device_id = ? AND project_id = ? AND session_id = ? AND status = 'completed'
-            """, key).fetchone()
-            if completed is None:
-                raise ProtocolError("INVALID_STATE")
-            return self._publish(key, kind, **fields)
 
     def _session(self, key):
         row = self.database.execute("""

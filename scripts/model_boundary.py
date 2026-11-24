@@ -9,7 +9,9 @@ from time import monotonic
 from typing import Protocol
 from uuid import UUID
 
-from message_protocol import PROJECT_ID, ProtocolError, parse_json
+from dialogue_draft import DRAFT_PROMPT_VERSION, mock_draft
+from dialogue_protocol import strict_object
+from message_protocol import PROJECT_ID, ProtocolError
 
 
 PROMPT_VERSION = "spec-draft-v1"
@@ -211,7 +213,8 @@ class ModelBoundary:
 
     @staticmethod
     def _validate(request: Request):
-        if (type(request.version) is not int or request.version != 1 or request.prompt_version != PROMPT_VERSION
+        if (type(request.version) is not int or request.version != 1
+                or request.prompt_version not in (PROMPT_VERSION, DRAFT_PROMPT_VERSION)
                 or not isinstance(request.request_id, UUID) or not isinstance(request.session_id, UUID)
                 or not isinstance(request.project_id, str) or not PROJECT_ID.fullmatch(request.project_id)
                 or type(request.timeout_seconds) not in (int, float)
@@ -246,9 +249,7 @@ class ModelBoundary:
                 if len(encoded) > MAX_OUTPUT_BYTES:
                     error = "MODEL_OUTPUT_TOO_LARGE"
                 else:
-                    candidate = parse_json(encoded)
-                    # Reject Unicode and numeric values that cannot be serialized as standard JSON.
-                    dumps(candidate, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                    candidate = strict_object(encoded)
                     digest = sha256(encoded).hexdigest()
             except (AttributeError, ProtocolError, RecursionError, ValueError):
                 candidate, error = None, "MODEL_INVALID_OUTPUT"
@@ -260,4 +261,7 @@ class ModelBoundary:
 
 class MockProvider:
     def invoke(self, request: Request, stop: Event) -> ProviderReply:
+        if request.prompt_version == DRAFT_PROMPT_VERSION:
+            draft = mock_draft(strict_object(request.input_text)["userMessage"])
+            return ProviderReply(dumps(draft, ensure_ascii=False), Usage(24, 12))
         return ProviderReply('{"goal":"Keep short notes","storesData":true}', Usage(24, 12))

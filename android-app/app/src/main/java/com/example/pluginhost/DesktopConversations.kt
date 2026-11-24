@@ -234,7 +234,20 @@ private fun DesktopDialogueState(event: JSONObject) {
             for (field in listOf("title", "goal")) {
                 (draft.opt(field) as? String)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
-            if (type == "desktop.review") Text(event.getString("summary"))
+            if (type == "desktop.review") {
+                Text(event.getString("summary"))
+                draft.optJSONArray("unsupportedItems")?.let { items ->
+                    for (index in 0 until items.length()) {
+                        val item = items.optJSONObject(index) ?: continue
+                        val request = item.opt("request") as? String ?: continue
+                        val reason = item.opt("reason") as? String ?: continue
+                        val alternative = item.opt("alternative") as? String ?: continue
+                        Text("不支持的请求 $request", style = MaterialTheme.typography.labelLarge)
+                        Text(reason, style = MaterialTheme.typography.bodySmall)
+                        Text("替代方案 $alternative", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
         "desktop.error" -> Text(desktopFailureText(event.getString("code")), style = MaterialTheme.typography.bodySmall)
     }

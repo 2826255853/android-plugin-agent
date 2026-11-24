@@ -7,6 +7,7 @@ from threading import Event
 from message_protocol import ProtocolError, parse_json
 from model_boundary import MAX_OUTPUT_BYTES, OPENAI_MODEL, ProviderReply, Request, Usage
 from model_credentials import read_openai_key
+from dialogue_draft import DRAFT_PROMPT_VERSION, DRAFT_SYSTEM_PROMPT
 
 
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -17,6 +18,10 @@ SYSTEM_PROMPT = (
     "and unsupportedItems when relevant. Use null, empty arrays, or an empty goal for missing requirements. "
     "Omit schemaVersion, projectId, version, status, and revision. Do not invent device permissions."
 )
+
+
+def system_prompt(request: Request) -> str:
+    return DRAFT_SYSTEM_PROMPT if request.prompt_version == DRAFT_PROMPT_VERSION else SYSTEM_PROMPT
 
 
 def _post(body: bytes, key: str, timeout: float, stop: Event) -> tuple[int, bytes]:
@@ -70,7 +75,7 @@ def invoke_openai(request: Request, stop: Event, key: str, post) -> ProviderRepl
     body = json.dumps({
         "model": OPENAI_MODEL, "n": 1, "store": False, "service_tier": "default",
         "max_completion_tokens": request.output_tokens, "response_format": {"type": "json_object"},
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": request.input_text}],
+        "messages": [{"role": "system", "content": system_prompt(request)}, {"role": "user", "content": request.input_text}],
     }, ensure_ascii=False).encode("utf-8")
     try:
         status, raw = post(body, key, request.timeout_seconds, stop)

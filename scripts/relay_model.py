@@ -8,7 +8,7 @@ from time import monotonic
 from message_protocol import ProtocolError, parse_json
 from model_boundary import RATES, RELAY_MODEL, ModelError, ProviderReply, Usage
 from model_credentials import read_key
-from openai_model import SYSTEM_PROMPT
+from openai_model import system_prompt
 
 
 RELAY_TARGET = "AndroidPluginAgent/Kakou"
@@ -135,7 +135,7 @@ class RelayProvider:
             remaining, before = _quota(before_report)
             if remaining < RATE.ceiling(request.output_tokens):
                 raise ModelError("MODEL_BUDGET_EXHAUSTED")
-            payload = {"model": RELAY_MODEL, "instructions": SYSTEM_PROMPT, "input": request.input_text}
+            payload = {"model": RELAY_MODEL, "instructions": system_prompt(request), "input": request.input_text}
             count = exchange("/v1/responses/input_tokens", payload)["input_tokens"]
             if type(count) is not int or count < 1:
                 raise ModelError("MODEL_CONFIG_INVALID")

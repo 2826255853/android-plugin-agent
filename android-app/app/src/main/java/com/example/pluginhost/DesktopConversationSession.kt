@@ -308,6 +308,8 @@ internal fun desktopFailureText(code: String) = when (code) {
     "MODEL_USAGE_UNCERTAIN" -> "上次模型调用结果待核对。"
     "MODEL_BUDGET_EXHAUSTED" -> "项目模型预算已用完。"
     "MODEL_INPUT_TOO_LARGE" -> "需求正文超过模型处理上限。"
+    "MODEL_INVALID_OUTPUT" -> "电脑收到的规格格式无效，无法进入审阅。"
+    "MODEL_OUTPUT_TOO_LARGE" -> "电脑收到的规格超过处理上限。"
     "MODEL_TIMEOUT" -> "电脑等待模型响应超时。"
     "PROJECT_NAME" -> "请输入 1 至 64 个字符的项目名称。"
     "MESSAGE_BODY" -> "请输入消息，最多 12,000 个字符。"

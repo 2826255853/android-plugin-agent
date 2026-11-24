@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from desktop_receiver import envelope as message_envelope
 from dialogue_coordinator import DialogueCoordinator, encode, envelope, timestamp
+from dialogue_draft import MOCK_UNSUPPORTED_REQUEST
 from dialogue_protocol import parse
 from model_boundary import MockProvider
 from receiver_inbox import Inbox
@@ -92,17 +93,30 @@ def cancelled(key, head, sequence=1):
                     messageId=key[2], inReplyTo=head["eventId"])
 
 
-def publish_fixtures(coordinator, key, *, large=True):
-    expiry = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
-    # Exercise byte-limited pages with a valid wire draft close to 48 KiB.
+def byte_limited_pages():
+    with closing(sqlite3.connect(":memory:")) as db:
+        inbox = Inbox(db)
+        coordinator = DialogueCoordinator(inbox)
+        message = send({"deviceId": "pagination-phone", "credentialId": str(uuid4())}, PROJECT)
+        received, _ = inbox.save(message, timestamp(), datetime.now(timezone.utc) - timedelta(days=1))
+        coordinator.ingest(received)
+        key, _ = coordinator._claim()
+        check_page_sizes(coordinator, key)
+    print("PASS wire pagination respects the byte limit")
+
+
+def check_page_sizes(coordinator, key):
+    # Inject wire-only fixtures into an isolated running session to reach the transport byte limit.
     spec_json = encode({"schemaVersion": 1, "status": "draft", "projectId": key[1], "version": 1,
-                        "title": "Fictional B3 draft", "goal": "记" * (15_000 if large else 10)})
+                        "title": "Fictional B3 draft", "goal": "记" * 15_000})
     fields = {"specVersion": 1, "specSha256": hashlib.sha256(spec_json.encode()).hexdigest()}
-    for _ in range(3 if large else 21):
-        coordinator.publish_draft(key, "desktop.draft", specJson=spec_json, **fields)
-    question = coordinator.publish_draft(key, "desktop.question", question="Which fields should each note have?",
-                                         expiresAt=expiry, **fields)
-    return question, fields
+    with coordinator.transaction():
+        for _ in range(3):
+            coordinator._publish(key, "desktop.draft", specJson=spec_json, **fields)
+    page = coordinator.pull(envelope(key, "dialogue.pull", after=1, limit=20))
+    assert page["hasMore"] and page["next"] == 4
+    final = coordinator.pull(envelope(key, "dialogue.pull", after=4, limit=20))
+    assert final["next"] == 5 and not final["hasMore"]
 
 
 def desktop(home):
@@ -142,19 +156,19 @@ def desktop(home):
         assert first_page["events"][0]["state"] == "queued" and first_page["next"] == 1
         ack = envelope(key, "dialogue.ack", through=1)
         assert post(receiver, "ack", ack, phone) == ack
-        assert pull(receiver, key, phone, after=3, expected=409)["code"] == "INVALID_CURSOR"
-        assert post(receiver, "ack", {**ack, "through": 3}, phone, expected=409)["code"] == "INVALID_CURSOR"
+        assert pull(receiver, key, phone, after=5, expected=409)["code"] == "INVALID_CURSOR"
+        assert post(receiver, "ack", {**ack, "through": 5}, phone, expected=409)["code"] == "INVALID_CURSOR"
+        question = pull(receiver, key, phone, after=3)["events"][0]
+        spec = {name: question[name] for name in ("specVersion", "specSha256")}
         receiver.stop(phone["credential"], other["credential"], BODY)
     print("PASS inbox idempotency, one active round per scope, legacy receipt, and device/project isolation")
 
-    with closing(sqlite3.connect(home / "AndroidPluginAgentReceiver/inbox.sqlite3")) as db:
-        question, spec = publish_fixtures(DialogueCoordinator(Inbox(db)), key)
     with Console(home, "127.0.0.1") as receiver:
         assert receiver.post("/v1/messages", first, phone["credential"]) == (200, receipt)
         assert pull(receiver, key, phone, limit=1) == first_page
-        second_page = pull(receiver, key, phone, after=1)
-        assert second_page["hasMore"] and second_page["next"] == 4
-        final_page = pull(receiver, key, phone, after=4)
+        second_page = pull(receiver, key, phone, after=1, limit=2)
+        assert second_page["hasMore"] and second_page["next"] == 3
+        final_page = pull(receiver, key, phone, after=3)
         assert final_page["events"][-1] == question and not final_page["hasMore"]
         end = final_page["next"]
         assert post(receiver, "ack", {**ack, "through": end}, phone)["through"] == end
@@ -181,7 +195,7 @@ def desktop(home):
         receiver.command(f"revoke {phone['deviceId']}")
         assert pull(receiver, key, phone, expected=403)["code"] == "DEVICE_REVOKED"
         receiver.stop(phone["credential"], BODY)
-    print("PASS ordered byte-limited pages, monotonic acknowledgements, duplicate/conflicting submissions and restart")
+    print("PASS ordered pages, monotonic acknowledgements, duplicate/conflicting submissions and restart")
 
 
 def interrupted_claim(path):
@@ -243,15 +257,15 @@ def android(home, serial):
             session_id = message["id"]
             wait_call(home, session_id)
             phone.tap("刷新规格会话")
-            phone.expect("电脑已接收", "规格会话处理中")
-            A5["wait_for"](lambda: database(home, "SELECT acked_sequence FROM dialogue_sessions") == [(2,)],
+            question_text, sequence = database(
+                home, "SELECT payload, sequence FROM dialogue_events WHERE direction = 'desktop' ORDER BY sequence DESC LIMIT 1"
+            )[0]
+            question = json.loads(question_text)
+            phone.expect("电脑已接收", "规格会话等待补充", question["question"])
+            A5["wait_for"](lambda: database(home, "SELECT acked_sequence FROM dialogue_sessions") == [(sequence,)],
                            "first Android acknowledgement")
             receiver.stop(BODY)
-        print("PASS Android receipt and independent processing state")
-        with closing(sqlite3.connect(home / "AndroidPluginAgentReceiver/inbox.sqlite3")) as db:
-            device = db.execute("SELECT device_id FROM dialogue_sessions").fetchone()[0]
-            key = device, message["project_id"], session_id
-            question, _ = publish_fixtures(DialogueCoordinator(Inbox(db)), key, large=False)
+        print("PASS Android receipt and deterministic clarification")
         with Console(home, "127.0.0.1", port=port) as receiver:
             phone.launch(connected=address)
             try:
@@ -269,8 +283,19 @@ def android(home, serial):
             )
             assert database(home, "SELECT COUNT(*) FROM dialogue_model_calls") == [(1,)]
             assert phone.outbox()[BODY] == message
-            receiver.stop(BODY)
-        print("PASS Android and desktop restart with paginated catch-up and ack")
+            phone.tap("返回会话")
+            phone.tap("新建项目")
+            phone.fill("项目名称", "B4 review fixture")
+            phone.tap("创建")
+            phone.fill("输入插件需求", MOCK_UNSUPPORTED_REQUEST)
+            phone.tap("发送")
+            phone.expect("电脑已接收", "刷新规格会话")
+            wait_call(home, phone.outbox()[MOCK_UNSUPPORTED_REQUEST]["id"])
+            phone.tap("刷新规格会话")
+            phone.expect("规格等待审阅", "Quick Notes", "不支持的请求 device.contacts",
+                         "当前宿主未开放通讯录访问。", "替代方案 允许用户手动输入联系人名称。")
+            receiver.stop(BODY, MOCK_UNSUPPORTED_REQUEST)
+        print("PASS Android restart, acknowledgement and unsupported-capability review")
         phone.adb("reverse", "--remove", reverse_port)
         reverse_port = None
         phone.launch()
@@ -294,6 +319,7 @@ def main():
     args = parser.parse_args()
     with TemporaryDirectory(prefix="stage-b3-") as directory:
         home = Path(directory)
+        byte_limited_pages()
         interrupted_claim(home / "interrupted.sqlite3")
         desktop(home)
     if args.android:

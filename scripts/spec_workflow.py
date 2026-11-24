@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import tempfile
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 PROJECT_ID = re.compile(r"[a-z][a-z0-9-]{2,63}")
 SHA256 = re.compile(r"[a-f0-9]{64}")
 SPEC_METADATA = {"projectId", "schemaVersion", "version", "status", "revision"}
+SPEC_DIRECTORY = Path(__file__).resolve().parents[1] / "desktop-spec"
+SPEC_SCHEMA = json.loads((SPEC_DIRECTORY / "spec.schema.json").read_text(encoding="utf-8"))
 
 
 class SpecError(ValueError):
@@ -53,6 +56,45 @@ def clarification_questions(spec: dict[str, Any]) -> list[dict[str, str]]:
 def _need(condition: bool, message: str) -> None:
     if not condition:
         raise SpecError(message)
+
+
+def validate_schema(spec: dict[str, Any]) -> None:
+    """Apply the JSON Schema constraints used by the v1 specification."""
+    def check(value, rules):
+        if "$ref" in rules:
+            check(value, SPEC_SCHEMA["$defs"][rules["$ref"].removeprefix("#/$defs/")])
+            return
+        kind = rules.get("type")
+        if isinstance(kind, list):
+            _need(kind == ["boolean", "null"] and (type(value) is bool or value is None), "invalid schema type")
+        elif kind == "object":
+            _need(isinstance(value, dict), "schema requires an object")
+            properties = rules["properties"]
+            _need(set(rules["required"]) <= value.keys() <= properties.keys(), "invalid schema properties")
+            for field, child in value.items():
+                check(child, properties[field])
+        elif kind == "array":
+            _need(isinstance(value, list) and len(value) >= rules.get("minItems", 0), "invalid schema array")
+            for child in value:
+                check(child, rules["items"])
+            if rules.get("uniqueItems"):
+                _need(len({spec_json(child) for child in value}) == len(value), "duplicate schema items")
+        elif kind == "string":
+            _need(isinstance(value, str), "schema requires a string")
+            _need(rules.get("minLength", 0) <= len(value) <= rules.get("maxLength", len(value)),
+                  "invalid schema string length")
+            if "pattern" in rules:
+                _need(re.fullmatch(rules["pattern"], value) is not None, "invalid schema string pattern")
+        elif kind in {"integer", "number"}:
+            allowed = (int,) if kind == "integer" else (int, float)
+            _need(type(value) in allowed and (type(value) is int or isfinite(value)), "invalid schema number")
+            _need(rules.get("minimum", value) <= value <= rules.get("maximum", value), "invalid schema number range")
+        if "const" in rules:
+            _need(type(value) is type(rules["const"]) and value == rules["const"], "invalid schema constant")
+        if "enum" in rules:
+            _need(value in rules["enum"], "invalid schema choice")
+
+    check(spec, SPEC_SCHEMA)
 
 
 def _only_keys(item: dict[str, Any], allowed: set[str], label: str) -> None:
@@ -176,9 +218,17 @@ def _confirmed_at(store: Path, project_id: str, version: int) -> dict[str, Any]:
     return spec
 
 
+def next_version(store: Path, project_id: str) -> int:
+    _need(PROJECT_ID.fullmatch(project_id) is not None, "invalid project")
+    return _latest_version(store / project_id) + 1
+
+
+def spec_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
 def _spec_digest(value: Any) -> str:
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(spec_json(value).encode("utf-8")).hexdigest()
 
 
 def revise(store: Path, project_id: str, base_version: int) -> dict[str, Any]:
