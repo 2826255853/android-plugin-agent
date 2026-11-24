@@ -145,7 +145,11 @@ class Cdp {
 }
 let cdp, forwarded;
 let installed = false;
-const start = () => adb('shell', 'am', 'start', '-W', '-n', `${appId}/.MainActivity`);
+async function start() {
+  adb('shell', 'am', 'start', '-W', '-n', `${appId}/.MainActivity`);
+  await tap('打开会话菜单');
+  await tap('我的插件');
+}
 async function connect() {
   const pid = adb('shell', 'pidof', appId).trim();
   forwarded = adb('forward', 'tcp:0', `localabstract:webview_devtools_remote_${pid}`).trim();
@@ -234,7 +238,7 @@ async function verifyIterations() {
   assert(!adb('shell', 'run-as', appId, 'ls', '-a', `files/plugins/${pluginId}`).split(/\s+/).includes('.previous'),
     'Rollback consumes the saved previous version');
   await checkNotes(notes, second.receipt.pluginName, stored);
-  adb('shell', 'am', 'force-stop', appId); start();
+  adb('shell', 'am', 'force-stop', appId); await start();
   installedHashes(second.id, second.receipt.pluginVersion);
   await checkNotes(notes, second.receipt.pluginName, stored);
   console.log('PASS rollback confirmation and cancellation, exact restored resources, all three notes and page storage after restart');
@@ -245,7 +249,7 @@ try {
   transfer(taskId, directory, receipt);
   console.log('PASS explicit target transfer and device-side ZIP SHA-256');
   adb('install', '-r', join(root, 'android-app/app/build/outputs/apk/debug/app-debug.apk'));
-  adb('shell', 'am', 'force-stop', appId); start();
+  adb('shell', 'am', 'force-stop', appId); await start();
   await selectZip(remoteName);
   await until(() => adb('shell', 'run-as', appId, 'ls', `files/plugins/${pluginId}/manifest.json`).trim(), 'installed generated package');
   installed = true; installedHashes(taskId, receipt.pluginVersion);
@@ -258,7 +262,7 @@ try {
   await tap('授权读取'); await cdp.evaluate("document.querySelector('#refresh').click()");
   await until(() => cdp.evaluate("document.querySelector('#notes').innerText.includes('Fictional stage31 note')"), 'read saved note');
   console.log('PASS generated page default deny, separate grants and actual note interaction');
-  await disconnect(); adb('shell', 'am', 'force-stop', appId); start();
+  await disconnect(); adb('shell', 'am', 'force-stop', appId); await start();
   await action('打开'); await connect();
   await until(() => cdp.evaluate("document.querySelector('#status').textContent.includes('PERMISSION_DENIED')"), 'grants reset after restart');
   await tap('授权读取'); await cdp.evaluate("document.querySelector('#refresh').click()");
@@ -282,7 +286,7 @@ try {
     // Also recover from failures while the external picker is in the foreground.
     adb('shell', 'am', 'force-stop', appId);
     adb('shell', 'input', 'keyevent', '4');
-    start();
+    await start();
     await action('移除');
     await until(() => nodes().some(item => item.text.includes(`（${pluginId}）`)), 'test plugin identity in removal confirmation');
     const label = await until(() => nodes().find(item => item.text.includes('同时永久删除此插件的宿主数据和页面来源存储')), 'test data deletion option');

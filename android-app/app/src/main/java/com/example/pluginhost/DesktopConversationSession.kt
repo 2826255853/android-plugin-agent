@@ -100,26 +100,35 @@ internal class DesktopConversationSession private constructor(context: Context) 
         dialogueNotice = null
     }
 
-    fun createProject(name: String, onSaved: () -> Unit) = work {
+    fun createProject(name: String, firstMessage: String? = null, onSaved: () -> Unit) = work {
         val endpoint = link?.endpoint ?: return@work
         val title = name.trim()
         if (title.isEmpty() || title.length > 64) throw DesktopFailure("PROJECT_NAME")
-        val created = io { store.createProject(title, endpoint.fingerprint) }
+        firstMessage?.let(::validateBody)
+        val created = io { store.createProject(title, endpoint.fingerprint, firstMessage) }
         projects = listOf(created) + projects
         messages = emptyList()
         project = created
         onSaved()
+        if (firstMessage != null) {
+            refreshMessages()
+            drain(includeRetries = false)
+        }
     }
 
     fun enqueue(body: String, onSaved: () -> Unit) = work {
         val selected = project ?: return@work
-        if (body.isBlank() || body.codePointCount(0, body.length) > MessageProtocol.MAX_BODY_CHARS ||
-            !Charsets.UTF_8.newEncoder().canEncode(body)
-        ) throw DesktopFailure("MESSAGE_BODY")
+        validateBody(body)
         io { store.enqueue(selected.id, body) }
         onSaved()
         refreshMessages()
         drain(includeRetries = false)
+    }
+
+    private fun validateBody(body: String) {
+        if (body.isBlank() || body.codePointCount(0, body.length) > MessageProtocol.MAX_BODY_CHARS ||
+            !Charsets.UTF_8.newEncoder().canEncode(body)
+        ) throw DesktopFailure("MESSAGE_BODY")
     }
 
     fun retry() = work {

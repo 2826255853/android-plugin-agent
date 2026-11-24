@@ -89,13 +89,21 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
         }
     }
 
-    fun createProject(name: String, fingerprint: String): DesktopProject {
+    fun createProject(name: String, fingerprint: String, firstMessage: String? = null): DesktopProject {
         val project = DesktopProject("project-${UUID.randomUUID()}", name, fingerprint)
-        writableDatabase.insertOrThrow("projects", null, ContentValues().apply {
-            put("id", project.id)
-            put("name", project.name)
-            put("fingerprint", project.fingerprint)
-        })
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.insertOrThrow("projects", null, ContentValues().apply {
+                put("id", project.id)
+                put("name", project.name)
+                put("fingerprint", project.fingerprint)
+            })
+            firstMessage?.let { insertMessage(db, project.id, 1, it) }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
         return project
     }
 
@@ -106,18 +114,22 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
             val sequence = db.rawQuery(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM messages WHERE project_id = ?", arrayOf(projectId),
             ).use { check(it.moveToFirst()); it.getLong(0) }
-            db.insertOrThrow("messages", null, ContentValues().apply {
-                put("id", UUID.randomUUID().toString())
-                put("project_id", projectId)
-                put("sequence", sequence)
-                put("body", body)
-                put("created_at", System.currentTimeMillis())
-                put("delivery", Delivery.QUEUED.name)
-            })
+            insertMessage(db, projectId, sequence, body)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+    }
+
+    private fun insertMessage(db: SQLiteDatabase, projectId: String, sequence: Long, body: String) {
+        db.insertOrThrow("messages", null, ContentValues().apply {
+            put("id", UUID.randomUUID().toString())
+            put("project_id", projectId)
+            put("sequence", sequence)
+            put("body", body)
+            put("created_at", System.currentTimeMillis())
+            put("delivery", Delivery.QUEUED.name)
+        })
     }
 
     fun messages(projectId: String): List<QueuedMessage> = readableDatabase.rawQuery(

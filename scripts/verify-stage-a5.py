@@ -64,20 +64,28 @@ class Android:
     def expect(self, *labels: str):
         def match():
             nodes = self.nodes()
-            texts = {node.get("text") for node in nodes}
-            return nodes if all(label in texts for label in labels) else None
+            return nodes if all(any(self.has_label(node, label) for node in nodes) for label in labels) else None
 
         return wait_for(match, " / ".join(labels))
 
+    @staticmethod
+    def has_label(node, label: str):
+        return label in (node.get("text"), node.get("content-desc"))
+
     def tap(self, label: str):
-        node = next(node for node in self.expect(label) if node.get("text") == label)
+        node = next(node for node in self.expect(label) if self.has_label(node, label))
         x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.get("bounds")))
         self.shell("input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
 
     def fill(self, field: str, text: str, *, replace=False):
         self.tap(field)
         if replace:
-            self.shell("input", "keycombination", "113", "29")  # Ctrl+A
+            wait_for(
+                lambda: any(node.get("focused") == "true" and node.get("text") == field
+                            for node in self.nodes()),
+                "existing value focused for replacement",
+            )
+            self.shell("input", "keyevent", "KEYCODE_MOVE_END", *["KEYCODE_DEL"] * len(field))
         self.shell("input", "text", text.replace(" ", "%s"))
         if "mInputShown=true" in self.shell("dumpsys", "input_method"):
             self.shell("input", "keyevent", "KEYCODE_BACK")
@@ -85,12 +93,29 @@ class Android:
     def launch(self, *, reopen=False, connected=None):
         self.shell("am", "force-stop", APP)
         self.shell("am", "start", "-W", "-n", f"{APP}/com.example.pluginhost.MainActivity")
-        self.tap("开发会话")
-        self.expect("项目会话")
+        self.expect("打开会话菜单", "试试这些灵感")
         if connected:
-            self.expect(f"上次连接成功 · {connected}")
+            self.check_connection(connected)
         if reopen:
-            self.tap("A5 acceptance project")
+            self.open_project("A5 acceptance project")
+
+    def open_project(self, title: str):
+        self.tap("打开会话菜单")
+        self.tap(title)
+
+    def open_connection(self):
+        labels = ("连接电脑", "电脑已连接", "连接设置")
+        label = wait_for(
+            lambda: next((item.get("text") for item in self.nodes() if item.get("text") in labels), None),
+            "desktop connection control",
+        )
+        self.tap(label)
+
+    def check_connection(self, address: str):
+        self.expect("电脑已连接")
+        self.open_connection()
+        self.expect(f"上次连接成功 · {address}")
+        self.tap("返回会话")
 
     def send(self, name: str):
         self.fill("输入插件需求", BODY[name])
@@ -128,7 +153,7 @@ class Android:
 def pair(phone, receiver, codes, *, address=None, device_id=None):
     code = receiver.command("pair")["pairingCode"]
     codes.append(code)
-    phone.tap("连接电脑")
+    phone.open_connection()
     nodes = phone.expect("电脑配对")
     shown_id = next(node.get("text").split(" ")[-1] for node in nodes
                     if node.get("text", "").startswith("本机设备 ID "))
@@ -198,8 +223,8 @@ def run(phone: Android, home: Path):
         pin, port = receiver.pin, receiver.address[1]
         original_address = f"https://10.0.2.2:{port}"
         device = pair(phone, receiver, codes, address=original_address)
-        phone.expect(f"上次连接成功 · {original_address}")
-        phone.tap("新建项目")
+        phone.check_connection(original_address)
+        phone.open_project("新建项目")
         phone.fill("项目名称", "A5 acceptance project")
         phone.tap("创建")
         phone.send("normal")
@@ -248,8 +273,10 @@ def run(phone: Android, home: Path):
     different_home = home / "different-receiver"
     different_home.mkdir()
     with Console(different_home, "127.0.0.1") as different:
-        phone.tap("连接电脑")
-        phone.fill(original_address, f"https://10.0.2.2:{different.address[1]}", replace=True)
+        wrong_address = f"https://10.0.2.2:{different.address[1]}"
+        phone.open_connection()
+        phone.fill(original_address, wrong_address, replace=True)
+        phone.expect(wrong_address)
         phone.tap("验证并更新电脑地址")
         phone.expect("电脑证书指纹不匹配，请在电脑上重新核对。")
         assert different.command("inbox") == []
@@ -261,7 +288,8 @@ def run(phone: Android, home: Path):
         phone.adb("reverse", "--no-rebind", moved_port, moved_port)
         updated = f"https://127.0.0.1:{receiver.address[1]}"
         try:
-            phone.fill(f"https://10.0.2.2:{different.address[1]}", updated, replace=True)
+            phone.fill(wrong_address, updated, replace=True)
+            phone.expect(updated)
             phone.tap("验证并更新电脑地址")
             phone.expect(f"上次连接成功 · {updated}")
             phone.tap("返回会话")

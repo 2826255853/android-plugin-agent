@@ -55,7 +55,7 @@ function uiNodes() {
   const nodes = [];
   for (const match of xml.matchAll(/<node\b([^>]*)>/g)) {
     const attrs = match[1];
-    const text = attrs.match(/\btext="([^"]*)"/)?.[1] ?? attrs.match(/\bcontent-desc="([^"]*)"/)?.[1] ?? '';
+    const text = attrs.match(/\btext="([^"]*)"/)?.[1] || attrs.match(/\bcontent-desc="([^"]*)"/)?.[1] || '';
     const bounds = attrs.match(/\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
     if (!bounds) continue;
     nodes.push({
@@ -261,8 +261,12 @@ try {
     await pause(500);
   }
   adb('shell', 'am', 'force-stop', appId);
-  const startApp = () => adb('shell', 'am', 'start', '-W', '-n', `${appId}/.MainActivity`);
-  startApp();
+  const startApp = async () => {
+    adb('shell', 'am', 'start', '-W', '-n', `${appId}/.MainActivity`);
+    await tapText('打开会话菜单');
+    await tapText('我的插件');
+  };
+  await startApp();
   await importPackage();
   await openPlugin();
 
@@ -300,7 +304,7 @@ try {
 
   await leavePlugin();
   adb('shell', 'am', 'force-stop', appId);
-  startApp();
+  await startApp();
   await ensurePluginVisible(id);
   await openPlugin();
   response = await cdp.evaluate("__probeRequest('data.read', { collection: 'notes' })");
@@ -315,7 +319,7 @@ try {
 
   adb('shell', 'am', 'force-stop', appId);
   adb('shell', 'run-as', appId, 'mv', `files/plugins/${id}`, `files/plugins/.backup-${id}-12345`);
-  startApp();
+  await startApp();
   await ensurePluginVisible(id);
   await openPlugin();
   await grant('data.read');

@@ -18,21 +18,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -60,6 +59,8 @@ import java.security.MessageDigest
 import java.util.WeakHashMap
 
 class MainActivity : ComponentActivity() {
+    private enum class HostPage { Chat, Plugins, Diagnostics }
+
     private var toastGranted by mutableStateOf(false)
     private var toastCount by mutableIntStateOf(0)
     private var bridgeSupported by mutableStateOf(true)
@@ -103,7 +104,7 @@ class MainActivity : ComponentActivity() {
         )
 
         setContent {
-            MaterialTheme {
+            WorkshopTheme {
                 val context = LocalContext.current
                 val installed = remember { mutableStateListOf<LocalPluginStore.Installed>() }
                 var packageStatus by remember { mutableStateOf("") }
@@ -113,7 +114,8 @@ class MainActivity : ComponentActivity() {
                 var activePlugin by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var removeTarget by remember { mutableStateOf<LocalPluginStore.Installed?>(null) }
                 var deletePluginData by remember { mutableStateOf(false) }
-                var showConversations by rememberSaveable { mutableStateOf(false) }
+                var page by rememberSaveable { mutableStateOf(HostPage.Chat) }
+                val screenState = rememberSaveableStateHolder()
                 val closePlugin = {
                     pluginAccessSession.revokeAll()
                     grantedPluginCapabilities = emptySet()
@@ -125,7 +127,13 @@ class MainActivity : ComponentActivity() {
                     grantedPluginCapabilities = emptySet()
                     activePlugin = plugin
                 }
-                BackHandler(enabled = activePlugin != null) { closePlugin() }
+                BackHandler(enabled = activePlugin != null || page != HostPage.Chat) {
+                    when {
+                        activePlugin != null -> closePlugin()
+                        page == HostPage.Diagnostics -> page = HostPage.Plugins
+                        else -> page = HostPage.Chat
+                    }
+                }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     if (uri != null) {
                         packageBusy = true
@@ -173,14 +181,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val active = activePlugin
-                if (showConversations) {
-                    DesktopConversations(onClose = { showConversations = false })
-                } else if (active != null) {
-                    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            Button(onClick = { closePlugin() }) { Text("返回插件列表") }
-                            Text("${active.name}  ${active.version}", modifier = Modifier.padding(12.dp))
-                        }
+                if (active != null) {
+                    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
+                        WorkshopTopBar("${active.name}  ${active.version}", WorkshopGlyph.Back, "返回插件列表", closePlugin)
                         Row(modifier = Modifier.fillMaxWidth()) {
                             if ("data.read" in active.capabilities) {
                                 val granted = "data.read" in grantedPluginCapabilities
@@ -226,41 +229,31 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
+                } else if (page == HostPage.Chat) {
+                    screenState.SaveableStateProvider("chat") {
+                        WorkshopChat(onOpenPlugins = { page = HostPage.Plugins })
+                    }
+                } else if (page == HostPage.Plugins) {
+                    WorkshopPlugins(
+                        installed = installed,
+                        status = packageStatus,
+                        busy = packageBusy,
+                        onBack = { page = HostPage.Chat },
+                        onImport = {
+                            picker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                        },
+                        onOpen = openPlugin,
+                        onRemove = {
+                            deletePluginData = false
+                            removeTarget = it
+                        },
+                        onRollback = { rollbackTarget = it },
+                        onDiagnostics = { page = HostPage.Diagnostics },
+                    )
                 } else {
-                    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            Text("本地插件", modifier = Modifier.padding(8.dp).weight(1f))
-                            Button(enabled = !packageBusy, onClick = {
-                                picker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
-                            }) { Text("导入 ZIP") }
-                        }
-                        TextButton(onClick = { showConversations = true }) { Text("开发会话") }
-                        if (packageStatus.isNotEmpty()) {
-                            Text(packageStatus, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
-                        }
-                        if (installed.isEmpty()) Text("暂无已安装插件", modifier = Modifier.padding(horizontal = 12.dp))
-                        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                            items(installed, key = { it.id }) { plugin ->
-                                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                    Row(modifier = Modifier.fillMaxWidth()) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text("${plugin.name}  ${plugin.version}")
-                                            Text(plugin.id)
-                                        }
-                                        Button(enabled = !packageBusy, onClick = { openPlugin(plugin) }) { Text("打开") }
-                                        Button(enabled = !packageBusy, onClick = {
-                                            deletePluginData = false; removeTarget = plugin
-                                        }) { Text("移除") }
-                                    }
-                                    plugin.rollbackVersion?.let { version ->
-                                        TextButton(enabled = !packageBusy, onClick = { rollbackTarget = plugin }) {
-                                            Text("回退到 $version")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Text("桥接实验：org.example.bridge-demo / ui.toast", modifier = Modifier.padding(8.dp))
+                    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
+                        WorkshopTopBar("桥接实验", WorkshopGlyph.Back, "返回插件列表", { page = HostPage.Plugins })
+                        Text("org.example.bridge-demo / ui.toast", modifier = Modifier.padding(8.dp))
                         Row(modifier = Modifier.fillMaxWidth()) {
                             Button(onClick = { toastGranted = !toastGranted }, enabled = bridgeSupported) {
                                 Text(if (toastGranted) "撤销提示授权" else "授权提示")

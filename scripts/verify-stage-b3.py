@@ -240,6 +240,13 @@ def android(home, serial):
     reverse_port = None
     try:
         phone.launch()
+        phone.tap("随手记")
+        draft = "我想做一个随手记插件，可以新增、编辑和删除笔记，把内容保存在本机。"
+        phone.expect(draft)
+        phone.tap("发送")
+        phone.expect("电脑配对")
+        phone.tap("返回会话")
+        phone.expect(draft)
         with Console(home, "127.0.0.1") as receiver:
             port = receiver.address[1]
             endpoint = f"tcp:{port}"
@@ -247,13 +254,16 @@ def android(home, serial):
             reverse_port = endpoint
             address = f"https://127.0.0.1:{port}"
             A5["pair"](phone, receiver, [], address=address)
-            phone.tap("新建项目")
+            phone.open_project("新建项目")
             phone.fill("项目名称", "B3 acceptance project")
             phone.tap("创建")
             phone.fill("输入插件需求", BODY)
             phone.tap("发送")
             phone.expect("电脑已接收", "刷新规格会话")
             message = phone.outbox()[BODY]
+            phone.tap("消息详情")
+            phone.expect(f"回执 ID {message['receipt_id']}")
+            phone.tap("收起详情")
             session_id = message["id"]
             wait_call(home, session_id)
             phone.tap("刷新规格会话")
@@ -269,7 +279,7 @@ def android(home, serial):
         with Console(home, "127.0.0.1", port=port) as receiver:
             phone.launch(connected=address)
             try:
-                phone.tap("B3 acceptance project")
+                phone.open_project("B3 acceptance project")
                 phone.tap("刷新规格会话")
                 phone.expect("电脑已接收", "规格会话等待补充", question["question"])
             except AssertionError:
@@ -284,13 +294,12 @@ def android(home, serial):
             assert database(home, "SELECT COUNT(*) FROM dialogue_model_calls") == [(1,)]
             assert phone.outbox()[BODY] == message
             phone.tap("返回会话")
-            phone.tap("新建项目")
-            phone.fill("项目名称", "B4 review fixture")
-            phone.tap("创建")
             phone.fill("输入插件需求", MOCK_UNSUPPORTED_REQUEST)
             phone.tap("发送")
             phone.expect("电脑已接收", "刷新规格会话")
-            wait_call(home, phone.outbox()[MOCK_UNSUPPORTED_REQUEST]["id"])
+            review_message = phone.outbox()[MOCK_UNSUPPORTED_REQUEST]
+            assert review_message["project_id"] != message["project_id"] and review_message["sequence"] == 1
+            wait_call(home, review_message["id"])
             phone.tap("刷新规格会话")
             phone.expect("规格等待审阅", "Quick Notes", "不支持的请求 device.contacts",
                          "当前宿主未开放通讯录访问。", "替代方案 允许用户手动输入联系人名称。")
@@ -303,7 +312,7 @@ def android(home, serial):
                           "与电脑的连接中断，可重试原消息。"}
         A5["wait_for"](lambda: any(node.get("text") in failure_labels for node in phone.nodes()),
                        "completed offline connection check")
-        phone.tap("B3 acceptance project")
+        phone.open_project("B3 acceptance project")
         phone.expect("电脑已接收", question["question"])
     finally:
         if reverse_port:

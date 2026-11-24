@@ -84,6 +84,31 @@ const code = (response, expected) => {
 };
 function pass(name, details = '') { console.log(`PASS ${mode}: ${name}${details ? ' ' + details : ''}`); }
 
+function nativeState() {
+  const path = '/sdcard/plugin-host-bridge-window.xml';
+  adb('shell', 'rm', '-f', path);
+  try { adb('shell', 'uiautomator', 'dump', path); }
+  catch (error) {
+    // API 37 may kill the legacy dumper after it has successfully written the XML.
+    if (error.status !== 137 || !error.stdout?.includes(`dumped to: ${path}`)) throw error;
+  }
+  const xml = adb('shell', 'cat', path);
+  assert(xml.includes('<hierarchy'), 'uiautomator did not produce a current hierarchy');
+  return xml;
+}
+async function tapNative(label) {
+  const node = await until(
+    () => nativeState().match(new RegExp(`<node[^>]*(?:text|content-desc)="${label}"[^>]*>`))?.[0], label,
+  );
+  const bounds = node.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/).slice(1).map(Number);
+  adb('shell', 'input', 'tap', String(Math.floor((bounds[0] + bounds[2]) / 2)), String(Math.floor((bounds[1] + bounds[3]) / 2)));
+}
+async function openDiagnostics() {
+  await tapNative('打开会话菜单');
+  await tapNative('我的插件');
+  await tapNative('桥接实验');
+}
+
 try {
   if (mode === 'browser') {
     const assetRoot = join(root, 'android-app', 'app', 'src', 'main', 'assets');
@@ -110,6 +135,7 @@ try {
     origin = 'https://appassets.androidplatform.net';
     adb('shell', 'am', 'force-stop', 'com.example.pluginhost');
     adb('shell', 'am', 'start', '-W', '-n', 'com.example.pluginhost/.MainActivity');
+    await openDiagnostics();
     const pid = await until(() => adb('shell', 'pidof', 'com.example.pluginhost').trim(), 'host process');
     port = adb('forward', 'tcp:0', `localabstract:webview_devtools_remote_${pid}`).trim();
     forwardedPort = port;
@@ -122,27 +148,8 @@ try {
   code(await request('ui.toast', { text: '默认拒绝样例' }), 'PERMISSION_DENIED');
   pass('default denial');
 
-  async function nativeState() {
-    const path = '/sdcard/plugin-host-bridge-window.xml';
-    adb('shell', 'rm', '-f', path);
-    try { adb('shell', 'uiautomator', 'dump', path); }
-    catch (error) {
-      // API 37 may kill the legacy dumper after it has successfully written the XML.
-      if (error.status !== 137 || !error.stdout?.includes(`dumped to: ${path}`)) throw error;
-    }
-    const xml = adb('shell', 'cat', path);
-    assert(xml.includes('<hierarchy'), 'uiautomator did not produce a current hierarchy');
-    return xml;
-  }
-  async function toggleNativeGrant(label) {
-    const xml = await nativeState();
-    const node = xml.match(new RegExp(`<node[^>]*text="${label}"[^>]*>`))?.[0];
-    assert(node, `Native grant control missing: ${label}`);
-    const bounds = node.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/).slice(1).map(Number);
-    adb('shell', 'input', 'tap', String(Math.floor((bounds[0] + bounds[2]) / 2)), String(Math.floor((bounds[1] + bounds[3]) / 2)));
-  }
   if (mode === 'browser') await cdp.evaluate('testAdapter.setToastGranted(true)');
-  else await toggleNativeGrant('授权提示');
+  else await tapNative('授权提示');
   const success = await request('ui.toast', { text: '桥接往返虚构样例' });
   assert.equal(success.ok, true, JSON.stringify(success));
   assert.equal(success.result.simulated, mode === 'browser');
@@ -193,7 +200,7 @@ try {
     }
     assert.match(await nativeState(), /已显示提示：1/);
     pass('all denied requests produced no toast side effects');
-    await toggleNativeGrant('撤销提示授权');
+    await tapNative('撤销提示授权');
     // Restore adapter callback after raw transport tests.
     await cdp.evaluate("import('./adapters.js').then(module => { globalThis.testAdapter = new module.AndroidAdapter(); })");
   } else await cdp.evaluate('testAdapter.setToastGranted(false)');
@@ -231,10 +238,11 @@ try {
     await cdp.evaluate("document.querySelector('#error-recovery').click()");
     await until(async () => await cdp.evaluate("document.querySelector('#loads') !== null"), 'return from error page');
     pass('wrong main page rejected and missing-resource error preserved');
-    await toggleNativeGrant('授权提示');
+    await tapNative('授权提示');
     cdp.close(); cdp = null;
     adb('shell', 'am', 'force-stop', 'com.example.pluginhost');
     adb('shell', 'am', 'start', '-W', '-n', 'com.example.pluginhost/.MainActivity');
+    await openDiagnostics();
     const pid = await until(() => adb('shell', 'pidof', 'com.example.pluginhost').trim(), 'restarted host');
     adb('forward', `tcp:${port}`, `localabstract:webview_devtools_remote_${pid}`);
     await connectPage();

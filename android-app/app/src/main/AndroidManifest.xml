@@ -5,7 +5,8 @@
     <application
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
-        android:label="Plugin Host Test"
+        android:icon="@drawable/workshop_launcher"
+        android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
