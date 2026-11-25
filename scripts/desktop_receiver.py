@@ -20,6 +20,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
@@ -31,6 +32,7 @@ from dialogue_coordinator import DialogueCoordinator
 from dialogue_protocol import strict_object, validate as validate_dialogue
 from receiver_inbox import Inbox
 from receiver_storage import ReceiverStorage, StorageError
+from spec_workflow import SPEC_DIRECTORY
 
 
 PAIRING_DURATION = timedelta(minutes=10)
@@ -118,11 +120,12 @@ class PendingPair:
 
 
 class Receiver:
-    def __init__(self, storage: ReceiverStorage, fingerprint: str, inbox: Inbox):
+    def __init__(self, storage: ReceiverStorage, fingerprint: str, inbox: Inbox,
+                 *, spec_store: Path = SPEC_DIRECTORY / "projects"):
         self.storage = storage
         self.fingerprint = fingerprint
         self.message_store = inbox
-        self.dialogue = DialogueCoordinator(inbox)
+        self.dialogue = DialogueCoordinator(inbox, spec_store=spec_store)
         self.devices = storage.load_devices()
         self.lock = threading.Lock()
         self.code: tuple[str, datetime] | None = None

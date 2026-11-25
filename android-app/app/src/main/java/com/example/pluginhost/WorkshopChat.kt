@@ -634,7 +634,7 @@ private fun WorkshopTurn(
                 ) {
                     SelectionContainer {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            DesktopDialogueState(event)
+                            DesktopDialogueState(event, message.id in session.rejectedDialogues)
                             if (message.delivery == Delivery.RECEIVED && event.optString("type") == "desktop.question") {
                                 var answer by remember(event.optString("eventId")) { mutableStateOf("") }
                                 OutlinedTextField(
@@ -657,6 +657,14 @@ private fun WorkshopTurn(
                                     ) { Text("取消本轮") }
                                 }
                             } else if (message.delivery == Delivery.RECEIVED && event.optString("type") == "desktop.review") {
+                                var reviewing by remember(event.getString("eventId")) { mutableStateOf(false) }
+                                Button(enabled = !session.busy, onClick = { reviewing = true }) {
+                                    Text("审阅完整规格")
+                                }
+                                if (reviewing) DesktopSpecReview(event, onDismiss = { reviewing = false }) { decision ->
+                                    reviewing = false
+                                    session.submitDialogue(message, event, decision)
+                                }
                                 var revision by remember(event.optString("eventId")) { mutableStateOf("") }
                                 OutlinedTextField(
                                     value = revision,

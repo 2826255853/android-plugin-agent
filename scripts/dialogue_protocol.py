@@ -39,7 +39,7 @@ STATES = {
     "queued": {"running", "cancelled", "failed"},
     "running": {"waiting_for_user", "result_ready", "cancelled", "failed"},
     "waiting_for_user": {"queued", "cancelled", "failed"},
-    "result_ready": {"queued", "confirmed", "cancelled", "failed"},
+    "result_ready": {"result_ready", "queued", "confirmed", "cancelled", "failed"},
     "failed": {"queued", "cancelled"},
     "confirmed": set(),
     "cancelled": set(),

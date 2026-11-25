@@ -30,6 +30,8 @@ internal class DesktopConversationSession private constructor(context: Context) 
         private set
     var dialogueHeads by mutableStateOf<Map<String, JSONObject>>(emptyMap())
         private set
+    var rejectedDialogues by mutableStateOf<Set<String>>(emptySet())
+        private set
     var dialogueNotice by mutableStateOf<String?>(null)
         private set
     var link by mutableStateOf<DesktopLink?>(null)
@@ -90,6 +92,7 @@ internal class DesktopConversationSession private constructor(context: Context) 
     fun openProject(selected: DesktopProject) = work {
         messages = io { store.messages(selected.id) }
         dialogueHeads = io { store.dialogueHeads(selected.id) }
+        rejectedDialogues = io { store.rejectedDialogues(selected.id) }
         project = selected
     }
 
@@ -97,6 +100,7 @@ internal class DesktopConversationSession private constructor(context: Context) 
         project = null
         messages = emptyList()
         dialogueHeads = emptyMap()
+        rejectedDialogues = emptySet()
         dialogueNotice = null
     }
 
@@ -140,11 +144,12 @@ internal class DesktopConversationSession private constructor(context: Context) 
     fun submitDialogue(message: QueuedMessage, head: JSONObject, type: String, text: String? = null) = work {
         val selected = project ?: return@work
         val current = link ?: return@work
-        val identity = device ?: return@work
         if (message.delivery != Delivery.RECEIVED || selected.id != message.projectId ||
             current.endpoint.fingerprint != selected.fingerprint || current.blockedReason != null
         ) throw DesktopFailure("INVALID_STATE")
-        if (type != "phone.cancel" && text.isNullOrBlank()) throw DesktopFailure("MESSAGE_BODY")
+        if (type in setOf("phone.answer", "phone.revise") && text.isNullOrBlank()) {
+            throw DesktopFailure("MESSAGE_BODY")
+        }
         val event = io { store.queueDialogueSubmission(message, type, head, text) }
         try {
             io {
@@ -155,6 +160,11 @@ internal class DesktopConversationSession private constructor(context: Context) 
         } catch (failure: DesktopFailure) {
             if (!failure.retryable) {
                 io { store.discardDialogueSubmission(message.id, event.getString("eventId")) }
+            }
+            if (failure.code in dialogueRefreshErrors) {
+                syncDialogue()
+                if (project == selected) dialogueNotice = desktopFailureText(failure.code)
+                return@work
             }
             throw failure
         }
@@ -171,10 +181,10 @@ internal class DesktopConversationSession private constructor(context: Context) 
             val received = messages.filter { it.delivery == Delivery.RECEIVED }
             val localHeads = dialogueHeads
             if (received.isEmpty()) return
-            val missingSession = io {
+            val refreshFailure = io {
                 requireNetwork(current.endpoint)
                 val credential = credential()
-                var missing = false
+                var failureCode: String? = null
                 for (message in received) {
                     try {
                         val pending = store.pendingDialogueSubmission(message.id)
@@ -186,7 +196,8 @@ internal class DesktopConversationSession private constructor(context: Context) 
                                 if (!failure.retryable) {
                                     store.discardDialogueSubmission(message.id, pending.getString("eventId"))
                                 }
-                                throw failure
+                                if (failure.code !in dialogueRefreshErrors) throw failure
+                                failureCode = failure.code
                             }
                         }
                         var through = localHeads[message.id]?.getInt("sequence") ?: 0
@@ -199,18 +210,23 @@ internal class DesktopConversationSession private constructor(context: Context) 
                         }
                     } catch (failure: DesktopFailure) {
                         if (failure.code != "SESSION_NOT_FOUND") throw failure
-                        missing = true
+                        failureCode = failureCode ?: failure.code
                     }
                 }
-                missing
+                failureCode
             }
-            if (missingSession && project == selected) dialogueNotice = desktopFailureText("SESSION_NOT_FOUND")
+            connection = "CONNECTED"
+            if (refreshFailure != null && project == selected) dialogueNotice = desktopFailureText(refreshFailure)
         } catch (failure: DesktopFailure) {
             if (failure.pairingLost) blockPairing(current, failure.code)
             if (project == selected) dialogueNotice = desktopFailureText(failure.code)
         } finally {
             val updated = io { store.dialogueHeads(selected.id) }
-            if (project == selected) dialogueHeads = updated
+            val rejected = io { store.rejectedDialogues(selected.id) }
+            if (project == selected) {
+                dialogueHeads = updated
+                rejectedDialogues = rejected
+            }
         }
     }
 
@@ -325,6 +341,8 @@ internal class DesktopConversationSession private constructor(context: Context) 
 private val DesktopFailure.pairingLost: Boolean
     get() = code in setOf("DEVICE_REVOKED", "AUTH_REQUIRED", "PAIRING_REQUIRED", "PAIRING_EXPIRED")
 
+private val dialogueRefreshErrors = setOf("STALE_EVENT", "EXPIRED_EVENT", "SPEC_MISMATCH", "INVALID_STATE")
+
 internal fun desktopFailureText(code: String) = when (code) {
     "DESKTOP_ADDRESS" -> "请输入 HTTPS 地址、局域网 IPv4 和端口。"
     "DESKTOP_FINGERPRINT" -> "请输入电脑显示的 64 位证书指纹。"
@@ -349,6 +367,9 @@ internal fun desktopFailureText(code: String) = when (code) {
     "RATE_LIMITED" -> "发送过于频繁，请稍后重试。"
     "INTERNAL_ERROR" -> "电脑接收服务暂时无法保存消息。"
     "SESSION_NOT_FOUND" -> "电脑尚未提供此规格会话，请稍后刷新。"
+    "STALE_EVENT", "SPEC_MISMATCH", "INVALID_STATE" -> "审阅内容或会话状态已变化，请刷新规格会话并重新审阅。"
+    "EXPIRED_EVENT" -> "本次审阅或问题已过期，请刷新规格会话后再提交。"
+    "DIALOGUE_PENDING" -> "上一项操作仍待提交，请刷新规格会话以重试。"
     "CURSOR_EXPIRED", "INVALID_CURSOR" -> "电脑会话记录与本机进度不一致。"
     "MODEL_USAGE_UNCERTAIN" -> "上次模型调用结果待核对。"
     "MODEL_BUDGET_EXHAUSTED" -> "项目模型预算已用完。"

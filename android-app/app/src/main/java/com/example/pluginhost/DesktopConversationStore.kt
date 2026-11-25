@@ -25,7 +25,7 @@ internal data class QueuedMessage(
 )
 
 internal class DesktopConversationStore(context: Context, name: String = "desktop-conversations.db") :
-    SQLiteOpenHelper(context, File(context.noBackupFilesDir, name).absolutePath, null, 3) {
+    SQLiteOpenHelper(context, File(context.noBackupFilesDir, name).absolutePath, null, 4) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
@@ -65,6 +65,7 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createDialogueTable(db)
         if (oldVersion < 3) createDialogueSubmissionsTable(db)
+        else if (oldVersion < 4) db.execSQL("ALTER TABLE dialogue_submissions ADD COLUMN accepted_type TEXT")
     }
 
     private fun createDialogueTable(db: SQLiteDatabase) {
@@ -88,7 +89,8 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
             CREATE TABLE IF NOT EXISTS dialogue_submissions (
                 session_id TEXT PRIMARY KEY REFERENCES messages(id),
                 sequence INTEGER NOT NULL DEFAULT 0 CHECK (sequence BETWEEN 0 AND 2147483647),
-                pending_payload TEXT
+                pending_payload TEXT,
+                accepted_type TEXT
             )
             """.trimIndent(),
         )
@@ -102,9 +104,16 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
                 "SELECT sequence, pending_payload FROM dialogue_submissions WHERE session_id = ?",
                 arrayOf(message.id),
             ).use { if (it.moveToFirst()) it.getInt(0) to (if (it.isNull(1)) null else it.getString(1)) else 0 to null }
-            current.second?.let { return JSONObject(it) }
+            val needsText = type in setOf("phone.answer", "phone.revise")
+            current.second?.let { payload ->
+                val pending = JSONObject(payload)
+                if (pending.getString("type") != type || pending.getString("inReplyTo") != head.getString("eventId") ||
+                    (needsText && pending.getString("text") != text?.trim())
+                ) throw DesktopFailure("DIALOGUE_PENDING")
+                return pending
+            }
+            if (current.first == Int.MAX_VALUE) throw DesktopFailure("EVENT_SEQUENCE_CONFLICT")
             val sequence = current.first + 1
-            if (sequence > Int.MAX_VALUE) throw DesktopFailure("EVENT_SEQUENCE_CONFLICT")
             val event = JSONObject()
                 .put("dialogueVersion", 1)
                 .put("deviceId", head.getString("deviceId"))
@@ -119,8 +128,8 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
             if (type != "phone.cancel") {
                 event.put("specVersion", head.getInt("specVersion"))
                     .put("specSha256", head.getString("specSha256"))
-                    .put("text", text?.trim().orEmpty())
             }
+            if (needsText) event.put("text", text?.trim().orEmpty())
             DialogueProtocol.parse(event.toString())
             db.insertWithOnConflict("dialogue_submissions", null, ContentValues().apply {
                 put("session_id", message.id)
@@ -143,9 +152,15 @@ internal class DesktopConversationStore(context: Context, name: String = "deskto
         val db = writableDatabase
         val pending = pendingDialogueSubmission(sessionId) ?: return
         if (pending.optString("eventId") != eventId) return
-        db.execSQL("UPDATE dialogue_submissions SET pending_payload = NULL WHERE session_id = ? AND pending_payload = ?",
-            arrayOf(sessionId, pending.toString()))
+        db.execSQL("UPDATE dialogue_submissions SET pending_payload = NULL, accepted_type = ? WHERE session_id = ? AND pending_payload = ?",
+            arrayOf(pending.getString("type"), sessionId, pending.toString()))
     }
+
+    fun rejectedDialogues(projectId: String): Set<String> = readableDatabase.rawQuery(
+        "SELECT s.session_id FROM dialogue_submissions s JOIN messages m ON m.id = s.session_id " +
+            "WHERE m.project_id = ? AND s.accepted_type = 'phone.reject'",
+        arrayOf(projectId),
+    ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
 
     fun discardDialogueSubmission(sessionId: String, eventId: String) {
         val db = writableDatabase

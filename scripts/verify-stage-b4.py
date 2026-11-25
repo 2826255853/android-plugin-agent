@@ -82,12 +82,13 @@ class StageB4Tests(unittest.TestCase):
             expected_status = "failed" if expected_state == "failed" else "completed"
             charge = 0 if head.get("code") == "MODEL_INPUT_TOO_LARGE" else 24_000
             self.assertEqual(tuple(call), (DRAFT_PROMPT_VERSION, expected_status, charge, None, head.get("code")))
-            confirmation = envelope(key, "phone.confirm", eventId=str(uuid4()), sequence=1, createdAt=timestamp(),
-                                    messageId=key[2], inReplyTo=head["eventId"],
-                                    specVersion=head.get("specVersion", 1), specSha256=head.get("specSha256", "0" * 64))
-            with self.assertRaisesRegex(ProtocolError, "invalid request") as error:
-                coordinator.submit(confirmation)
-            self.assertEqual(error.exception.code, "INVALID_STATE")
+            if expected_state != "result_ready":
+                confirmation = envelope(key, "phone.confirm", eventId=str(uuid4()), sequence=1, createdAt=timestamp(),
+                                        messageId=key[2], inReplyTo=head["eventId"],
+                                        specVersion=head.get("specVersion", 1), specSha256=head.get("specSha256", "0" * 64))
+                with self.assertRaisesRegex(ProtocolError, "invalid request") as error:
+                    coordinator.submit(confirmation)
+                self.assertEqual(error.exception.code, "INVALID_STATE")
             self.assertEqual(self.page(coordinator, key), events)
             self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE name = 'tasks'").fetchall(), [])
         return events, provider.requests

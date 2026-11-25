@@ -46,6 +46,7 @@ class Stage15Instrumentation : Instrumentation() {
             test("dialogue-protocol-fixtures") { verifyDialogueProtocolFixtures(assetText("fixtures/stage-b1.json")) }
             test("desktop-conversation-outbox") { verifyDesktopOutbox() }
             test("desktop-dialogue-cursor-and-upgrade") { verifyDesktopDialogueCursor() }
+            test("desktop-spec-decision-outbox-upgrade") { verifySpecDecisionOutbox() }
             test("desktop-pairing-vault") { verifyDesktopPairingVault() }
         } catch (failure: Throwable) {
             failures += "runner: ${failure.javaClass.simpleName}: ${failure.message}"
@@ -182,6 +183,39 @@ class Stage15Instrumentation : Instrumentation() {
             check(store.applyDialoguePage(before, pages[1]) == 2)
             check(store.applyDialoguePage(before, pages[0]) == 2)
             check(store.dialogueHeads(before.projectId).getValue(before.id).getString("state") == "running")
+        }
+    }
+
+    private fun verifySpecDecisionOutbox() {
+        val name = "spec-decisions.db"
+        val (message, review, pending) = DesktopConversationStore(sandbox, name).use { store ->
+            val project = store.createProject("Spec review fixture", "a".repeat(64))
+            store.enqueue(project.id, "Fictional requirement")
+            val message = store.messages(project.id).single()
+            val review = JSONObject(assetText("fixtures/stage-b1.json")).getJSONObject("samples").getJSONObject("review")
+            val db = store.writableDatabase
+            db.execSQL("DROP TABLE dialogue_submissions")
+            db.execSQL(
+                "CREATE TABLE dialogue_submissions (session_id TEXT PRIMARY KEY REFERENCES messages(id), " +
+                    "sequence INTEGER NOT NULL DEFAULT 0, pending_payload TEXT)",
+            )
+            db.version = 3
+            Triple(message, review, store.queueDialogueSubmission(message, "phone.revise", review, "Add filters"))
+        }
+        DesktopConversationStore(sandbox, name).use { store ->
+            val retried = store.queueDialogueSubmission(message, "phone.revise", review, "Add filters")
+            check(retried.toString() == pending.toString())
+            val changed = runCatching { store.queueDialogueSubmission(message, "phone.confirm", review, null) }
+            check((changed.exceptionOrNull() as? DesktopFailure)?.code == "DIALOGUE_PENDING")
+            store.discardDialogueSubmission(message.id, retried.getString("eventId"))
+            val rejected = store.queueDialogueSubmission(message, "phone.reject", review, null)
+            check(rejected.getInt("sequence") == retried.getInt("sequence"))
+            check(rejected.getString("specSha256") == review.getString("specSha256") && !rejected.has("text"))
+            store.acceptDialogueSubmission(message.id, rejected.getString("eventId"))
+            check(store.pendingDialogueSubmission(message.id) == null)
+        }
+        DesktopConversationStore(sandbox, name).use { store ->
+            check(store.rejectedDialogues(message.projectId) == setOf(message.id))
         }
     }
 

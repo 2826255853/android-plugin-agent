@@ -1,5 +1,6 @@
 """Durable inbox-to-dialogue processing and ordered event delivery."""
 
+import hashlib
 import json
 import sqlite3
 import sys
@@ -12,7 +13,7 @@ from dialogue_draft import DRAFT_PROMPT_VERSION, check_draft, draft_input
 from dialogue_protocol import WINDOW, check_submission, check_transition, state_of, strict_object, validate
 from message_protocol import MAX_REQUEST_BYTES, ProtocolError
 from model_boundary import MAX_CLARIFICATIONS, MAX_OUTPUT_TOKENS, MOCK_MODEL, Config, ModelBoundary, ModelError, MockProvider, RATES, Request
-from spec_workflow import SPEC_DIRECTORY, SpecError, next_version
+from spec_workflow import SPEC_DIRECTORY, SpecError, load_json, next_version, save_confirmed, spec_json
 
 
 def timestamp():
@@ -79,6 +80,18 @@ class DialogueCoordinator:
                 FOREIGN KEY (device_id, project_id, session_id)
                     REFERENCES dialogue_sessions(device_id, project_id, session_id)
             );
+            CREATE TABLE IF NOT EXISTS dialogue_confirmations (
+                recovery_id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                finished INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (device_id, project_id, session_id)
+                    REFERENCES dialogue_sessions(device_id, project_id, session_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS dialogue_pending_confirmation
+                ON dialogue_confirmations(device_id, project_id, session_id) WHERE finished = 0;
             CREATE TABLE IF NOT EXISTS dialogue_model_calls (
                 request_id TEXT NOT NULL UNIQUE,
                 device_id TEXT NOT NULL,
@@ -104,6 +117,7 @@ class DialogueCoordinator:
         """)
         self._migrate_model_calls()
         self._recover()
+        self._recover_confirmations()
         # An A.1 receipt can already be durable when the process stops before ingest.
         for message in inbox.dialogue_messages():
             self.ingest(message)
@@ -368,6 +382,17 @@ class DialogueCoordinator:
         key, after = scope(request), request["after"]
         with self.lock:
             session = self._session(key)
+            if session["state"] == "result_ready" and after <= session["desktop_sequence"]:
+                pending = self._pending_confirmation(key)
+                if pending is not None:
+                    self._finish_confirmation(pending)
+                else:
+                    head = self._head(key, session)
+                    if datetime.now(timezone.utc) >= datetime.fromisoformat(head["expiresAt"]):
+                        with self.transaction():
+                            self._refresh_review(key, head)
+                        self.changed.set()
+                session = self._session(key)
             latest = session["desktop_sequence"]
             if after > latest:
                 raise ProtocolError("INVALID_CURSOR")
@@ -408,39 +433,154 @@ class DialogueCoordinator:
 
     def submit(self, event):
         key = scope(event)
-        with self.transaction():
-            session = self._session(key)
-            previous = self.database.execute("""
-                SELECT payload FROM dialogue_events
-                WHERE device_id = ? AND project_id = ? AND session_id = ? AND direction = 'phone' AND event_id = ?
-            """, (*key, event["eventId"])).fetchone()
-            head = self.database.execute("""
-                SELECT payload FROM dialogue_events
-                WHERE device_id = ? AND project_id = ? AND session_id = ? AND direction = 'desktop' AND sequence = ?
-            """, (*key, session["desktop_sequence"])).fetchone()
-            decision = check_submission(
-                event, json.loads(head[0]), json.loads(previous[0]) if previous else None,
-                session["phone_sequence"] + 1, datetime.now(timezone.utc),
-            )
-            duplicate = decision == "duplicate"
-            cancelled = not duplicate and event["type"] == "phone.cancel"
-            if not duplicate:
-                if event["type"] not in {"phone.cancel", "phone.answer", "phone.revise"}:
-                    raise ProtocolError("INVALID_STATE")
-                self._write_event(key, "phone", event)
-                self.database.execute("""
-                    UPDATE dialogue_sessions SET phone_sequence = ?
-                    WHERE device_id = ? AND project_id = ? AND session_id = ?
-                """, (event["sequence"], *key))
-                self._publish(key, "desktop.status", state="cancelled" if cancelled else "queued")
-        if cancelled:
-            with self.lock:
+        kind = event["type"]
+        with self.lock:
+            pending = self._pending_confirmation(key)
+            if pending is not None:
+                error = self._finish_confirmation(pending)
+                if error and event == json.loads(pending["payload"]):
+                    raise ProtocolError(error)
+            with self.transaction():
+                session = self._session(key)
+                previous = self.database.execute("""
+                    SELECT payload FROM dialogue_events
+                    WHERE device_id = ? AND project_id = ? AND session_id = ? AND direction = 'phone' AND event_id = ?
+                """, (*key, event["eventId"])).fetchone()
+                head = self._head(key, session)
+                decision = check_submission(
+                    event, head, json.loads(previous[0]) if previous else None,
+                    session["phone_sequence"] + 1, datetime.now(timezone.utc),
+                )
+                if decision == "duplicate":
+                    return self._submission_receipt(key, event, duplicate=True)
+                if kind == "phone.confirm":
+                    confirmation = self.database.execute("""
+                        INSERT INTO dialogue_confirmations (recovery_id, device_id, project_id, session_id, payload)
+                        VALUES (?, ?, ?, ?, ?) RETURNING *
+                    """, (str(uuid4()), *key, encode(event))).fetchall()[0]
+                else:
+                    self._record_submission(key, event)
+                    state = "cancelled" if kind in {"phone.cancel", "phone.reject"} else "queued"
+                    self._publish(key, "desktop.status", state=state)
+            if kind == "phone.confirm":
+                error = self._finish_confirmation(confirmation)
+                if error:
+                    raise ProtocolError(error)
+            if kind == "phone.cancel":
                 cancellation = self.call_cancellations.get(key)
                 if cancellation is not None:
                     cancellation.set()
         self.changed.set()
+        return self._submission_receipt(key, event, duplicate=False)
+
+    def _pending_confirmation(self, key):
+        return self.database.execute("""
+            SELECT * FROM dialogue_confirmations
+            WHERE device_id = ? AND project_id = ? AND session_id = ? AND finished = 0
+        """, key).fetchone()
+
+    @staticmethod
+    def _submission_receipt(key, event, *, duplicate):
         return envelope(key, "dialogue.accepted", eventId=event["eventId"],
                         sequence=event["sequence"], duplicate=duplicate)
+
+    def _record_submission(self, key, event):
+        self._write_event(key, "phone", event)
+        self.database.execute("""
+            UPDATE dialogue_sessions SET phone_sequence = ?
+            WHERE device_id = ? AND project_id = ? AND session_id = ?
+        """, (event["sequence"], *key))
+
+    def _head(self, key, session):
+        row = self.database.execute("""
+            SELECT payload FROM dialogue_events
+            WHERE device_id = ? AND project_id = ? AND session_id = ? AND direction = 'desktop' AND sequence = ?
+        """, (*key, session["desktop_sequence"])).fetchone()
+        return json.loads(row["payload"])
+
+    def _recover_confirmations(self):
+        for row in self.database.execute("SELECT * FROM dialogue_confirmations ORDER BY rowid").fetchall():
+            try:
+                if row["finished"]:
+                    self._clean_confirmation(row, self._recovery_link(row))
+                else:
+                    self._finish_confirmation(row)
+            except OSError:
+                print("dialogue: INTERNAL_ERROR", file=sys.stderr, flush=True)
+
+    def _recovery_link(self, row):
+        return self.spec_store / row["project_id"] / f".confirm-{row['recovery_id']}.tmp"
+
+    def _finish_confirmation(self, row):
+        event = json.loads(row["payload"])
+        key = scope(event)
+        recovery_link = self._recovery_link(row)
+        with self.transaction():
+            head = self._head(key, self._session(key))
+            error = self._save_review(key, event, head, recovery_link)
+            self.database.execute("UPDATE dialogue_confirmations SET finished = 1 WHERE recovery_id = ?",
+                                  (row["recovery_id"],))
+        self._clean_confirmation(row, recovery_link)
+        self.changed.set()
+        return error
+
+    def _clean_confirmation(self, row, recovery_link):
+        try:
+            recovery_link.unlink(missing_ok=True)
+            with self.transaction():
+                self.database.execute("DELETE FROM dialogue_confirmations WHERE recovery_id = ?",
+                                      (row["recovery_id"],))
+        except (OSError, sqlite3.Error):
+            # The receipt is already durable. Startup can retry cleanup.
+            print("dialogue: INTERNAL_ERROR", file=sys.stderr, flush=True)
+
+    def _save_review(self, key, event, head, recovery_link):
+        version = event["specVersion"]
+        try:
+            validate(head)
+            draft = strict_object(head["specJson"])
+            fields, decision = check_draft(draft, key[1], version, self.spec_store)
+            if (head["type"] != "desktop.review" or "summary" not in decision
+                    or fields["specSha256"] != event["specSha256"]
+                    or fields["specJson"] != head["specJson"] or head["eventId"] != event["inReplyTo"]):
+                raise SpecError("review binding changed")
+        except (ProtocolError, SpecError):
+            self._publish(key, "desktop.error", code="SPEC_MISMATCH")
+            return "SPEC_MISMATCH"
+
+        destination = recovery_link.parent / f"v{version}.json"
+        # The extra link identifies this intent's file across a crash before the SQLite commit.
+        try:
+            already_saved = recovery_link.samefile(destination)
+        except FileNotFoundError:
+            already_saved = False
+        if not already_saved:
+            try:
+                save_confirmed(draft, self.spec_store, recovery_link=recovery_link)
+            except SpecError:
+                self._refresh_review(key, head)
+                return "SPEC_MISMATCH"
+        try:
+            saved_json = spec_json(load_json(destination))
+        except ValueError as failure:
+            raise OSError("could not verify saved specification") from failure
+        if saved_json != spec_json(dict(draft, status="confirmed")):
+            self._publish(key, "desktop.error", code="SPEC_MISMATCH")
+            return "SPEC_MISMATCH"
+        saved_digest = hashlib.sha256(saved_json.encode("utf-8")).hexdigest()
+        self._record_submission(key, event)
+        self._publish(
+            key, "desktop.status", state="confirmed", specVersion=version,
+            specSha256=event["specSha256"], inReplyTo=event["eventId"], savedSpecSha256=saved_digest,
+        )
+        return None
+
+    def _refresh_review(self, key, review):
+        checked, error = self._check_draft(key, strict_object(review["specJson"]))
+        if error or "summary" not in checked[1]:
+            self._publish(key, "desktop.error", code="SPEC_MISMATCH")
+        else:
+            self._publish_checked(key, checked, None)
 
     def _session(self, key):
         row = self.database.execute("""

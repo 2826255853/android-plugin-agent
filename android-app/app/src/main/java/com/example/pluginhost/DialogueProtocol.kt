@@ -33,7 +33,7 @@ object DialogueProtocol {
         "queued" to setOf("running", "cancelled", "failed"),
         "running" to setOf("waiting_for_user", "result_ready", "cancelled", "failed"),
         "waiting_for_user" to setOf("queued", "cancelled", "failed"),
-        "result_ready" to setOf("queued", "confirmed", "cancelled", "failed"),
+        "result_ready" to setOf("result_ready", "queued", "confirmed", "cancelled", "failed"),
         "failed" to setOf("queued", "cancelled"),
         "confirmed" to emptySet(),
         "cancelled" to emptySet(),

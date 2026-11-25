@@ -271,7 +271,9 @@ def review_spec(spec: dict[str, Any], store: Path) -> dict[str, Any]:
     return result
 
 
-def save_confirmed(spec: dict[str, Any], store: Path, *, review_sha256: str | None = None) -> Path:
+def save_confirmed(spec: dict[str, Any], store: Path, *, review_sha256: str | None = None,
+                   recovery_link: Path | None = None) -> Path:
+    """Publish an immutable version, retaining the optional staging link for crash recovery."""
     validate_spec(spec, require_confirmable=True)
     _need(spec["status"] == "draft", "only drafts can be confirmed")
     if "revision" in spec:
@@ -289,7 +291,13 @@ def save_confirmed(spec: dict[str, Any], store: Path, *, review_sha256: str | No
     saved = dict(spec)
     saved["status"] = "confirmed"
     payload = (json.dumps(saved, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    fd, temp_name = tempfile.mkstemp(prefix=".spec-", suffix=".tmp", dir=project_dir)
+    if recovery_link is None:
+        fd, temp_name = tempfile.mkstemp(prefix=".spec-", suffix=".tmp", dir=project_dir)
+    else:
+        recovery_link.unlink(missing_ok=True)
+        temp_name = recovery_link
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        fd = os.open(temp_name, flags, 0o600)
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(payload)
@@ -300,7 +308,7 @@ def save_confirmed(spec: dict[str, Any], store: Path, *, review_sha256: str | No
         except FileExistsError as exc:
             raise SpecError("confirmed version already exists") from exc
     finally:
-        if os.path.exists(temp_name):
+        if recovery_link is None and os.path.exists(temp_name):
             os.unlink(temp_name)
     return destination
 

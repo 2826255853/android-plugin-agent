@@ -161,11 +161,27 @@ def pair(phone, receiver, codes, *, address=None, device_id=None):
         assert shown_id == device_id
     if address is not None:
         phone.fill("电脑 HTTPS 地址", address)
-        phone.fill("证书 SHA-256 指纹", receiver.pin)
+        phone.expect(address)
+        phone.tap("证书 SHA-256 指纹")
+        for offset in range(0, len(receiver.pin), 16):
+            phone.shell("input", "text", receiver.pin[offset:offset + 16])
+        if "mInputShown=true" in phone.shell("dumpsys", "input_method"):
+            phone.shell("input", "keyevent", "KEYCODE_BACK")
+        wait_for(lambda: any(node.get("text") == receiver.pin for node in phone.nodes()),
+                 "complete certificate fingerprint in the pairing form")
     phone.fill("六位配对码", code)
     assert all(code != node.get("text") for node in phone.nodes()), "Pairing code in UI snapshot"
     phone.tap("申请配对")
-    entries = wait_for(lambda: receiver.command("pending"), "desktop pairing request")
+    try:
+        entries = wait_for(lambda: receiver.command("pending"), "desktop pairing request")
+    except AssertionError as failure:
+        # Only surface fixed UI errors. The screen also contains pairing inputs.
+        known = {"请输入六位配对码。", "配对码无效或需要重新配对。", "电脑证书指纹不匹配，请在电脑上重新核对。",
+                 "无法建立 TLS 1.3 连接，请核对电脑服务和证书。", "无法连接电脑，请检查网络和接收服务。"}
+        reasons = {node.get("text") for node in phone.nodes()} & known
+        if reasons:
+            raise AssertionError(f"Pairing UI reported: {', '.join(sorted(reasons))}") from failure
+        raise
     assert len(entries) == 1 and entries[0]["deviceId"] == shown_id
     assert receiver.command(f"approve {entries[0]['requestId']}")["decision"] == "approve"
     phone.tap("返回会话")

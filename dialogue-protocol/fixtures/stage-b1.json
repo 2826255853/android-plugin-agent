@@ -58,6 +58,7 @@
     ["running","waiting_for_user",true],
     ["waiting_for_user","queued",true],
     ["running","result_ready",true],
+    ["result_ready","result_ready",true],
     ["result_ready","confirmed",true],
     ["failed","queued",true],
     ["confirmed","queued",false],
