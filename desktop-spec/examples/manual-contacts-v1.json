@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "projectId": "manual-contacts",
+  "version": 1,
+  "status": "draft",
+  "title": "手动联系人簿",
+  "goal": "手动录入并在本机查看联系人信息，不读取系统通讯录。",
+  "storesData": true,
+  "pages": [
+    { "id": "contacts_list", "name": "联系人列表", "purpose": "查看已保存联系人并进入新增操作。" },
+    { "id": "contact_editor", "name": "联系人编辑", "purpose": "手动输入姓名、电话和邮箱并保存。" }
+  ],
+  "collections": [
+    {
+      "id": "contacts",
+      "fields": [
+        { "id": "name", "type": "string", "required": true, "maxLength": 120 },
+        { "id": "phone", "type": "string", "required": false, "maxLength": 80 },
+        { "id": "email", "type": "string", "required": false, "maxLength": 254 }
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "id": "create_contact",
+      "trigger": "用户点击新增联系人",
+      "steps": ["手动输入姓名以及可选电话和邮箱", "保存", "返回列表并看到该联系人"]
+    }
+  ],
+  "permissions": [
+    { "capability": "data.read", "justification": "展示本插件保存的联系人。" },
+    { "capability": "data.write", "justification": "保存用户手动录入的联系人。" }
+  ],
+  "acceptanceCriteria": [
+    { "id": "save_contact", "scenario": "填写姓名并保存联系人", "expected": "列表显示该联系人，重启宿主后仍可读取。" },
+    { "id": "manual_only", "scenario": "未授权系统联系人访问", "expected": "可手动录入联系人，插件不请求系统通讯录权限。" }
+  ],
+  "unsupportedItems": [
+    { "request": "device.contacts", "reason": "宿主未开放系统通讯录访问。", "alternative": "手动输入联系人姓名、电话和邮箱。" }
+  ]
+}

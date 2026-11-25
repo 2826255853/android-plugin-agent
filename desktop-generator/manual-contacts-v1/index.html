@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'">
+    <title>__TITLE__</title>
+    <link rel="stylesheet" href="app.css">
+  </head>
+  <body>
+    <main>
+      <h1>__TITLE__</h1>
+      <p id="status" role="status">请在宿主原生界面分别授权读取和写入。</p>
+      <section id="list-page">
+        <h2>联系人</h2>
+        <button id="new-contact" type="button">新增联系人</button>
+        <button id="refresh" type="button">刷新列表</button>
+        <ul id="contacts"></ul>
+      </section>
+      <section id="editor-page" hidden>
+        <h2>手动录入</h2>
+        <form id="contact-form">
+          <label for="name">姓名</label>
+          <input id="name" maxlength="__NAME_LIMIT__" autocomplete="off" required>
+          <label for="phone">电话</label>
+          <input id="phone" maxlength="__PHONE_LIMIT__" type="tel" autocomplete="off">
+          <label for="email">邮箱</label>
+          <input id="email" maxlength="__EMAIL_LIMIT__" type="email" autocomplete="off">
+          <button type="submit">保存联系人</button>
+          <button id="cancel-edit" type="button">返回列表</button>
+        </form>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

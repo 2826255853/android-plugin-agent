@@ -1,4 +1,6 @@
 {
+  "valid-manual-contacts-v1.zip": "ACCEPTED",
+  "invalid-manual-contacts-unknown-capability-v1.zip": "CAPABILITY_UNKNOWN",
   "invalid-unknown-field.zip": "MANIFEST_INVALID",
   "invalid-manifest-version.zip": "MANIFEST_VERSION_UNSUPPORTED",
   "invalid-host-api-range.zip": "MANIFEST_INVALID",

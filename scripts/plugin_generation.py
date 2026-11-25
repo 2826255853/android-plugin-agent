@@ -26,6 +26,14 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "desktop-generator" / "quick-notes-v1"
 TEMPLATE_VERSION = "quick-notes-v1.0.0"
 PROFILE = ROOT / "desktop-spec" / "examples" / "quick-notes-v1.json"
+TEMPLATES = {
+    "quick-notes": (TEMPLATE, TEMPLATE_VERSION, PROFILE),
+    "manual-contacts": (
+        ROOT / "desktop-generator" / "manual-contacts-v1",
+        "manual-contacts-v1.0.0",
+        ROOT / "desktop-spec" / "examples" / "manual-contacts-v1.json",
+    ),
+}
 
 
 class GenerationError(ValueError):
@@ -39,7 +47,15 @@ def require(condition: Any, code: str, path: str | None = None, check: str | Non
         raise GenerationError(code, path, check)
 
 
-def _profile(spec: dict[str, Any]) -> None:
+def _template_id(spec: dict[str, Any]) -> str:
+    collections = spec.get("collections")
+    if isinstance(collections, list) and collections and isinstance(collections[0], dict):
+        if collections[0].get("id") == "contacts":
+            return "manual-contacts"
+    return "quick-notes"
+
+
+def _profile(spec: dict[str, Any]) -> str:
     try:
         validate_spec(spec, require_confirmable=True)
     except (SpecError, ValueError, TypeError, RecursionError):
@@ -54,7 +70,8 @@ def _profile(spec: dict[str, Any]) -> None:
             "GENERATOR_TITLE_INVALID", check="manifest_name")
     # The prose in spec v1 has no executable semantics. Explicitly match the
     # supported workflow instead of silently promising arbitrary functionality.
-    expected = json.loads(PROFILE.read_text(encoding="utf-8"))
+    template_id = _template_id(spec)
+    expected = json.loads(TEMPLATES[template_id][2].read_text(encoding="utf-8"))
     candidate = copy.deepcopy(spec)
     candidate.pop("revision", None)
     for key in ("projectId", "version", "status", "title"):
@@ -68,20 +85,23 @@ def _profile(spec: dict[str, Any]) -> None:
     except (KeyError, IndexError, StopIteration, TypeError):
         raise GenerationError("GENERATOR_UNSUPPORTED_SPEC", check="template_profile") from None
     require(encoded(candidate) == encoded(expected), "GENERATOR_UNSUPPORTED_SPEC", check="template_profile")
+    return template_id
 
 
 def generate_files(spec: dict[str, Any]) -> dict[str, bytes]:
     """Render the fixed append/read profile with escaped name and field limits."""
-    _profile(spec)
+    template_id = _profile(spec)
+    template = TEMPLATES[template_id][0]
     plugin_id = "org.generated." + spec["projectId"]
     limits = {f["id"]: f["maxLength"] for f in spec["collections"][0]["fields"]}
     files: dict[str, bytes] = {}
     for name in ("index.html", "app.js", "app.css"):
-        path = TEMPLATE / name
+        path = template / name
         require(path.stat().st_size <= FILE_BYTES, "TEMPLATE_INVALID", name, "template_size")
         content = path.read_text(encoding="utf-8")
-        replacements = ({"__TITLE__": html.escape(spec["title"], quote=True),
-                         "__TITLE_LIMIT__": str(limits["title"]), "__BODY_LIMIT__": str(limits["body"])}
+        replacements = ({"__TITLE__": html.escape(spec["title"], quote=True), **{
+                            f"__{field['id'].upper()}_LIMIT__": str(limits[field["id"]])
+                            for field in spec["collections"][0]["fields"] if "maxLength" in field}}
                         if name == "index.html" else {"__PLUGIN_ID__": plugin_id} if name == "app.js" else {})
         # A single substitution pass prevents user text from becoming a second
         # template expansion (for example a title containing another marker).
@@ -130,13 +150,17 @@ def run_static_tests(files: dict[str, bytes], spec: dict[str, Any]) -> list[str]
     parser = _Page()
     parser.feed(files["index.html"].decode("utf-8"))
     parser.close()
-    required = {"status", "list-page", "editor-page", "new-note", "note-form", "title", "body", "notes", "refresh", "load-more", "cancel-edit"}
+    template_id = _template_id(spec)
+    required = ({"status", "list-page", "editor-page", "new-note", "note-form", "title", "body", "notes", "refresh", "load-more", "cancel-edit"}
+                if template_id == "quick-notes" else
+                {"status", "list-page", "editor-page", "new-contact", "contact-form", "name", "phone", "email", "contacts", "refresh", "cancel-edit"})
     require(required <= parser.ids.keys() and set(parser.resources) == {"app.js", "app.css"},
             "STATIC_TEST_FAILED", "index.html", "page_structure")
     for field in spec["collections"][0]["fields"]:
         require(parser.ids[field["id"]].get("maxlength") == str(field["maxLength"]),
                 "STATIC_TEST_FAILED", "index.html", "field_limits")
-    require("required" in parser.ids["title"] and "hidden" in parser.ids["editor-page"],
+    primary_field = "title" if template_id == "quick-notes" else "name"
+    require("required" in parser.ids[primary_field] and "hidden" in parser.ids["editor-page"],
             "STATIC_TEST_FAILED", "index.html", "form_contract")
     return ["confirmed_spec_binding", "manifest_contract", "resource_integrity", "local_resource_references",
             "page_structure", "field_limits", "package_roundtrip"]
@@ -163,6 +187,7 @@ class GenerationPipeline:
             self._unwrap(self.store.claim_build(task_id))
             claimed = True
             spec = self._unwrap(self.store.tool(task_id, "read_spec", {}))["result"]["spec"]
+            report["templateVersion"] = TEMPLATES[_template_id(spec)][1]
             files = generate_files(spec)
             # All generated writes use the same quotas, revision history and
             # cancellation boundary as Agent file tools. No arbitrary file I/O.

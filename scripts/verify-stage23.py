@@ -76,6 +76,10 @@ class PackageContractTests(unittest.TestCase):
         expected = json.loads((FIXTURES / "expected-errors.json").read_text(encoding="utf-8"))
         for name, code in expected.items():
             with self.subTest(package=name):
+                if code == "ACCEPTED":
+                    manifest = validate_package((FIXTURES / name).read_bytes())
+                    self.assertEqual(1, manifest["manifestVersion"])
+                    continue
                 with self.assertRaises(PackageError) as raised:
                     validate_package((FIXTURES / name).read_bytes())
                 self.assertEqual(code, raised.exception.code, name)
