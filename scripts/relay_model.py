@@ -178,8 +178,9 @@ class RelayProvider:
                 pass
             return ProviderReply(_content(response, self._key), usage, billed_nano_usd=billed, exact_bill=exact_bill)
         except ModelError as error:
-            return ProviderReply(None, usage if submitted else Usage(0, 0), error.code,
-                                 billed if submitted else 0, exact_bill if submitted else True)
+            rejected = not submitted or error.code in {"MODEL_AUTH_FAILED", "MODEL_RATE_LIMITED"}
+            return ProviderReply(None, Usage(0, 0) if rejected else usage, error.code,
+                                 0 if rejected else billed, rejected or exact_bill)
         except (KeyError, TypeError, ValueError, ProtocolError):
             error = "MODEL_INVALID_OUTPUT" if submitted else "MODEL_CONFIG_INVALID"
             return ProviderReply(None, usage if submitted else Usage(0, 0), error,

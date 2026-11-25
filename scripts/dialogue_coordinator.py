@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from dialogue_draft import DRAFT_PROMPT_VERSION, check_draft, draft_input
 from dialogue_protocol import WINDOW, check_submission, check_transition, state_of, strict_object, validate
-from message_protocol import MAX_REQUEST_BYTES, ProtocolError
+from message_protocol import MAX_REQUEST_BYTES, PROJECT_ID, ProtocolError
 from model_boundary import MAX_CLARIFICATIONS, MAX_OUTPUT_TOKENS, MOCK_MODEL, Config, ModelBoundary, ModelError, MockProvider, RATES, Request
 from spec_workflow import SPEC_DIRECTORY, SpecError, load_json, next_version, save_confirmed, spec_json
 
@@ -34,15 +34,18 @@ def envelope(key, kind, **fields):
             "type": kind, **fields}
 
 
+DEFAULT_MODEL_CONFIG = Config("mock", MOCK_MODEL, 25_000_000)
+
+
 class DialogueCoordinator:
-    def __init__(self, inbox, provider=None, *, spec_store=SPEC_DIRECTORY / "projects"):
+    def __init__(self, inbox, provider=None, *, config=DEFAULT_MODEL_CONFIG, spec_store=SPEC_DIRECTORY / "projects"):
         self.database = inbox.database
         self.lock = inbox.database_lock
         self.changed = threading.Event()
         self.stopped = threading.Event()
         self.call_cancellations = {}
         self.worker = threading.Thread(target=self._work, name="dialogue-coordinator")
-        self.config = Config("mock", MOCK_MODEL, 25_000_000)
+        self.config = config
         self.model = ModelBoundary(self.config, provider if provider is not None else MockProvider())
         self.spec_store = spec_store
         self.database.executescript("""
@@ -116,6 +119,9 @@ class DialogueCoordinator:
             );
         """)
         self._migrate_model_calls()
+        with self.database:
+            self.database.execute("CREATE INDEX IF NOT EXISTS dialogue_calls_project "
+                                  "ON dialogue_model_calls(project_id, device_id, session_id)")
         self._recover()
         self._recover_confirmations()
         # An A.1 receipt can already be durable when the process stops before ingest.
@@ -200,19 +206,23 @@ class DialogueCoordinator:
 
     def _recover(self):
         with self.transaction():
+            # Older receivers did not distinguish missing usage from a conservative estimate.
+            self.database.execute("""
+                UPDATE dialogue_model_calls SET status = 'uncertain'
+                WHERE status = 'failed' AND exact_charge = 0 AND input_tokens IS NULL
+                    AND charged_nano_usd = reserved_nano_usd AND reserved_nano_usd > 0
+            """)
             pending = self.database.execute("""
-                SELECT device_id, project_id, session_id FROM dialogue_model_calls WHERE status = 'calling'
+                UPDATE dialogue_model_calls
+                SET status = 'uncertain', charged_nano_usd = reserved_nano_usd,
+                    exact_charge = 0, error_code = 'MODEL_USAGE_UNCERTAIN'
+                WHERE status IN ('calling', 'dispatching')
+                RETURNING device_id, project_id, session_id
             """).fetchall()
             for row in pending:
                 key = tuple(row)
-                self.database.execute("""
-                    UPDATE dialogue_model_calls
-                    SET status = 'uncertain', charged_nano_usd = reserved_nano_usd,
-                        exact_charge = 0, error_code = 'MODEL_USAGE_UNCERTAIN'
-                    WHERE device_id = ? AND project_id = ? AND session_id = ? AND status = 'calling'
-                """, key)
                 session = self._session(key)
-                if session["state"] != "cancelled":
+                if session["state"] == "running":
                     self._publish(key, "desktop.error", code="MODEL_USAGE_UNCERTAIN")
 
             legacy_calls = self.database.execute("""
@@ -232,6 +242,7 @@ class DialogueCoordinator:
                     UPDATE dialogue_model_calls SET status = ?, candidate_json = NULL, error_code = ?
                     WHERE request_id = ?
                 """, ("failed" if error else "completed", error, row["request_id"]))
+            self.database.execute("UPDATE dialogue_model_calls SET candidate_json = NULL WHERE candidate_json IS NOT NULL")
 
     def _work(self):
         while not self.stopped.is_set():
@@ -261,7 +272,7 @@ class DialogueCoordinator:
                     AND NOT EXISTS (
                         SELECT 1 FROM dialogue_model_calls c
                         WHERE c.device_id = s.device_id AND c.project_id = s.project_id
-                            AND c.session_id = s.session_id AND c.status = 'calling'
+                            AND c.session_id = s.session_id AND c.status IN ('calling', 'dispatching')
                     )
                 ORDER BY s.rowid LIMIT 1
             """).fetchone()
@@ -309,6 +320,10 @@ class DialogueCoordinator:
             request = Request(uuid4(), key[1], UUID(key[2]), request_input,
                               output_tokens=MAX_OUTPUT_TOKENS, prompt_version=DRAFT_PROMPT_VERSION)
             reserve = RATES[self.config.provider].ceiling(request.output_tokens)
+            totals = self._project_totals(key[1])
+            if totals["charged_nano_usd"] + totals["reserved_nano_usd"] + reserve > self.config.budget_nano_usd:
+                self._publish(key, "desktop.error", code="MODEL_BUDGET_EXHAUSTED")
+                return key, None
             self.database.execute("""
                 INSERT INTO dialogue_model_calls (
                     device_id, project_id, session_id, request_id, provider, model,
@@ -321,42 +336,90 @@ class DialogueCoordinator:
     def _call(self, key, request):
         candidate, receipt, error = None, None, None
         cancellation = threading.Event()
-        with self.lock:
+        with self.transaction():
+            claimed = self.database.execute("""
+                UPDATE dialogue_model_calls SET status = 'dispatching'
+                WHERE request_id = ? AND status = 'calling'
+                    AND device_id = ? AND project_id = ? AND session_id = ?
+            """, (str(request.request_id), *key))
+            if not claimed.rowcount:
+                return
             self.call_cancellations[key] = cancellation
             if self.stopped.is_set() or self._session(key)["state"] == "cancelled":
                 cancellation.set()
         try:
-            result = self.model.call(request, cancellation)
+            result = self.model.call(request, cancellation, pre_reserved=True)
             candidate, receipt, error = result.candidate, result.receipt, result.receipt.error
         except ModelError as failure:
-            receipt = self.model.receipt(request.request_id)
             error = failure.code
         with self.transaction():
-            uncertain = (receipt is None and error in {"MODEL_TIMEOUT", "MODEL_CANCELLED"}
-                         and self.model.has_request(request.request_id))
+            uncertain = receipt is not None and receipt.usage_uncertain
             usage = receipt.usage if receipt else None
             session = self._session(key)
             cancelled = session["state"] == "cancelled"
             checked = None
             if not error and not cancelled:
                 checked, error = self._check_draft(key, candidate)
-            self.database.execute("""
+            settled = self.database.execute("""
                 UPDATE dialogue_model_calls SET status = ?, exact_charge = ?,
-                    charged_nano_usd = CASE WHEN ? THEN reserved_nano_usd ELSE ? END,
+                    charged_nano_usd = ?,
                     input_tokens = ?, output_tokens = ?, cached_input_tokens = ?, elapsed_ms = ?,
                     content_sha256 = ?, error_code = ?
-                WHERE request_id = ? AND status = 'calling'
+                WHERE request_id = ? AND status = 'dispatching'
             """, (
                 "uncertain" if uncertain else "failed" if error else "completed",
-                int(receipt.exact_charge) if receipt else int(not uncertain), uncertain,
+                int(receipt.exact_charge) if receipt else 1,
                 receipt.charged_nano_usd if receipt else 0, usage.input_tokens if usage else None,
                 usage.output_tokens if usage else None, usage.cached_input_tokens if usage else None,
                 receipt.elapsed_ms if receipt else None, receipt.content_sha256 if receipt else None,
                 error, str(request.request_id),
             ))
-            if not cancelled:
+            if settled.rowcount and not cancelled:
                 self._publish_checked(key, checked, error)
             self.call_cancellations.pop(key, None)
+
+    def _project_totals(self, project):
+        return self.database.execute("""
+            SELECT COALESCE(SUM(charged_nano_usd), 0) AS charged_nano_usd,
+                COALESCE(SUM(CASE WHEN status IN ('calling', 'dispatching')
+                    THEN reserved_nano_usd ELSE 0 END), 0) AS reserved_nano_usd
+            FROM dialogue_model_calls WHERE project_id = ?
+        """, (project,)).fetchone()
+
+    def model_ledger(self, project):
+        if not PROJECT_ID.fullmatch(project):
+            raise ModelError("MODEL_CONFIG_INVALID")
+        with self.lock:
+            calls = self.database.execute("""
+                SELECT request_id, device_id, session_id, provider, model, prompt_version, status,
+                    reserved_nano_usd, charged_nano_usd, exact_charge, input_tokens, output_tokens,
+                    cached_input_tokens, elapsed_ms, content_sha256, error_code
+                FROM dialogue_model_calls WHERE project_id = ? ORDER BY rowid
+            """, (project,)).fetchall()
+            return {"projectId": project, "budget_nano_usd": self.config.budget_nano_usd,
+                    **dict(self._project_totals(project)), "calls": [dict(row) for row in calls]}
+
+    def reconcile_model_usage(self, request_id, charge, input_tokens, output_tokens, cached_tokens):
+        with self.transaction():
+            row = self.database.execute("""
+                SELECT status, provider, reserved_nano_usd, charged_nano_usd,
+                    input_tokens, output_tokens, cached_input_tokens
+                FROM dialogue_model_calls WHERE request_id = ?
+            """, (request_id,)).fetchone()
+            if row is None or row["status"] not in {"uncertain", "reconciled"}:
+                raise ModelError("MODEL_REQUEST_CONFLICT")
+            if (not 0 <= charge <= row["reserved_nano_usd"]
+                    or not 0 <= cached_tokens <= input_tokens <= RATES[row["provider"]].max_input_tokens
+                    or not 0 <= output_tokens <= MAX_OUTPUT_TOKENS):
+                raise ModelError("MODEL_CONFIG_INVALID")
+            values = charge, input_tokens, output_tokens, cached_tokens
+            if row["status"] == "reconciled" and values != tuple(row)[3:]:
+                raise ModelError("MODEL_REQUEST_CONFLICT")
+            self.database.execute("""
+                UPDATE dialogue_model_calls SET status = 'reconciled', exact_charge = 1,
+                    charged_nano_usd = ?, input_tokens = ?, output_tokens = ?, cached_input_tokens = ?
+                WHERE request_id = ? AND status = 'uncertain'
+            """, (*values, request_id))
 
     def _check_draft(self, key, candidate):
         try:

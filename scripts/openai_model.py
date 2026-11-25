@@ -86,7 +86,8 @@ def invoke_openai(request: Request, stop: Event, key: str, post) -> ProviderRepl
     if status != 200:
         code = {0: "MODEL_CANCELLED", 401: "MODEL_AUTH_FAILED", 403: "MODEL_AUTH_FAILED",
                 429: "MODEL_RATE_LIMITED"}.get(status, "MODEL_UNAVAILABLE")
-        return ProviderReply(None, None, code)
+        usage = Usage(0, 0) if code in {"MODEL_AUTH_FAILED", "MODEL_RATE_LIMITED"} else None
+        return ProviderReply(None, usage, code)
     if len(raw) > MAX_RESPONSE_BYTES:
         return ProviderReply(None, None, "MODEL_OUTPUT_TOO_LARGE")
     try:

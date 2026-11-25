@@ -28,10 +28,13 @@ from message_protocol import (
     CREDENTIAL, DEVICE_ID, MAX_REQUEST_BYTES, RETRY_WINDOW_SECONDS, SCHEMA_VERSION,
     UUID, ProtocolError, parse_json, validate_envelope,
 )
-from dialogue_coordinator import DialogueCoordinator
+from dialogue_coordinator import DEFAULT_MODEL_CONFIG, DialogueCoordinator
 from dialogue_protocol import strict_object, validate as validate_dialogue
+from model_boundary import MODELS, Config, ModelError, MockProvider
+from openai_model import OpenAIProvider
 from receiver_inbox import Inbox
 from receiver_storage import ReceiverStorage, StorageError
+from relay_model import RelayProvider
 from spec_workflow import SPEC_DIRECTORY
 
 
@@ -121,11 +124,11 @@ class PendingPair:
 
 class Receiver:
     def __init__(self, storage: ReceiverStorage, fingerprint: str, inbox: Inbox,
-                 *, spec_store: Path = SPEC_DIRECTORY / "projects"):
+                 *, spec_store: Path = SPEC_DIRECTORY / "projects", model_config=DEFAULT_MODEL_CONFIG, provider=None):
         self.storage = storage
         self.fingerprint = fingerprint
         self.message_store = inbox
-        self.dialogue = DialogueCoordinator(inbox, spec_store=spec_store)
+        self.dialogue = DialogueCoordinator(inbox, provider, config=model_config, spec_store=spec_store)
         self.devices = storage.load_devices()
         self.lock = threading.Lock()
         self.code: tuple[str, datetime] | None = None
@@ -586,17 +589,27 @@ def console(server: ReceiverServer) -> None:
                     display(receiver.inbox())
                 case ["inbox", "clear", "CONFIRM"]:
                     display({"cleared": receiver.clear_inbox()})
+                case ["model", "ledger", project]:
+                    display(receiver.dialogue.model_ledger(project))
+                case ["model", "reconcile", request_id, charge, input_tokens, output_tokens, cached_tokens]:
+                    try:
+                        usage = [int(value) for value in (charge, input_tokens, output_tokens, cached_tokens)]
+                    except ValueError:
+                        raise ModelError("MODEL_CONFIG_INVALID") from None
+                    receiver.dialogue.reconcile_model_usage(request_id, *usage)
+                    display({"request_id": request_id, "status": "reconciled"})
                 case ["stop"]:
                     return
                 case ["help"]:
                     display({"commands": ["status", "pair", "pending", "approve REQUEST_ID",
                                           "reject REQUEST_ID", "devices", "revoke DEVICE_ID [REASON]",
-                                          "inbox", "inbox clear CONFIRM", "stop"]})
+                                          "inbox", "inbox clear CONFIRM", "model ledger PROJECT_ID",
+                                          "model reconcile REQUEST_ID CHARGE_NANO_USD INPUT OUTPUT CACHED", "stop"]})
                 case []:
                     continue
                 case _:
                     display({"error": "UNKNOWN_COMMAND"})
-        except ProtocolError as error:
+        except (ProtocolError, ModelError) as error:
             display({"error": error.code})
         except (OSError, sqlite3.Error):
             display({"error": "INTERNAL_ERROR"})
@@ -607,20 +620,29 @@ def main() -> int:
     parser.add_argument("command", choices=["start"])
     parser.add_argument("--bind", required=True, type=lan_address, help="explicit local IPv4 LAN address")
     parser.add_argument("--port", type=int, default=8443, metavar="PORT")
+    parser.add_argument("--model-provider", choices=MODELS, default=DEFAULT_MODEL_CONFIG.provider)
+    parser.add_argument("--model-budget-nano-usd", type=int, help="cumulative budget per project (required for real models)")
     args = parser.parse_args()
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
+    if args.model_provider != "mock" and args.model_budget_nano_usd is None:
+        parser.error("--model-budget-nano-usd is required for real models")
     sys.stdout.reconfigure(encoding="utf-8")
     try:
+        budget = DEFAULT_MODEL_CONFIG.budget_nano_usd if args.model_budget_nano_usd is None else args.model_budget_nano_usd
+        config = Config(args.model_provider, MODELS[args.model_provider], budget)
         storage = ReceiverStorage()
         with storage.session():
+            providers = {"mock": MockProvider, "openai": OpenAIProvider, "kakou": RelayProvider}
+            provider = providers[config.provider]()
             context, fingerprint = storage.tls_identity()
             database_path = storage.root / "inbox.sqlite3"
             with closing(sqlite3.connect(
                 database_path, isolation_level="IMMEDIATE", check_same_thread=False,
                 autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL,
             )) as database, ReceiverServer(
-                (args.bind, args.port), context, Receiver(storage, fingerprint, Inbox(database))
+                (args.bind, args.port), context,
+                Receiver(storage, fingerprint, Inbox(database), model_config=config, provider=provider)
             ) as server:
                 server.receiver.dialogue.start()
                 worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})
@@ -634,6 +656,8 @@ def main() -> int:
                     worker.join()
         display({"state": "stopped"})
         return 0
+    except ModelError as error:
+        print(f"receiver: {error.code}", file=sys.stderr)
     except StorageError as error:
         print(f"receiver: {error}", file=sys.stderr)
     except (OSError, ValueError, sqlite3.Error):

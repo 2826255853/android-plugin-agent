@@ -169,7 +169,7 @@ class StageB5Tests(unittest.TestCase):
         coordinator.submit(cancel)
         worker.join(3)
         self.assertFalse(worker.is_alive())
-        self.assertTrue(stopped.is_set())
+        self.assertTrue(stopped.wait(2))
         self.assertEqual(coordinator._session(key)["state"], "cancelled")
         self.assertEqual(coordinator._session(key)["desktop_sequence"], 3)
         self.assertEqual(database.execute("SELECT COUNT(*) FROM dialogue_model_calls").fetchone()[0], 1)

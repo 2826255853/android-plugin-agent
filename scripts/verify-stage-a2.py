@@ -59,7 +59,15 @@ def interrupt_save(self, *args):
     save(self, *args)
     os._exit(72)
 
-Inbox.save = interrupt_save
+if phase == "model":
+    from model_boundary import MockProvider
+
+    def interrupt_model(self, request, stop):
+        os._exit(73)
+
+    MockProvider.invoke = interrupt_model
+else:
+    Inbox.save = interrupt_save
 sys.exit(main())
 """
 
@@ -109,7 +117,8 @@ sys.exit(desktop_receiver.main())
 
 class Console:
     def __init__(self, home: Path, address: str, port: int = 0, *,
-                 interrupt: str | None = None, reply_fault: Path | None = None, spec_store: Path | None = None):
+                 interrupt: str | None = None, reply_fault: Path | None = None, spec_store: Path | None = None,
+                 model_budget: int | None = None):
         command = [sys.executable, SCRIPT]
         if interrupt:
             command = [sys.executable, "-c", INTERRUPT, SCRIPT.parent, interrupt]
@@ -117,8 +126,11 @@ class Console:
             command = [sys.executable, "-c", REPLY_FAULTS, SCRIPT.parent, reply_fault]
         elif spec_store is not None:
             command = [sys.executable, "-c", ISOLATED_SPEC_STORE, SCRIPT.parent, spec_store]
+        command += ["start", "--bind", address, "--port", str(port)]
+        if model_budget is not None:
+            command += ["--model-budget-nano-usd", str(model_budget)]
         self.process = subprocess.Popen(
-            [*command, "start", "--bind", address, "--port", str(port)],
+            command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", env={**os.environ, "LOCALAPPDATA": str(home)},
         )

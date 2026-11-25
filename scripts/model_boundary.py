@@ -24,6 +24,7 @@ MAX_OUTPUT_TOKENS = 1024
 MAX_CLARIFICATIONS = 4
 MAX_CONCURRENCY = 2
 MAX_PROJECT_BUDGET = 100_000_000  # USD 0.10 in nano-USD
+MODELS = {"mock": MOCK_MODEL, "openai": OPENAI_MODEL, "kakou": RELAY_MODEL}
 
 
 class ModelError(Exception):
@@ -39,9 +40,8 @@ class Config:
     budget_nano_usd: int
 
     def __post_init__(self):
-        models = {"mock": MOCK_MODEL, "openai": OPENAI_MODEL, "kakou": RELAY_MODEL}
-        if (not isinstance(self.provider, str) or self.provider not in models
-                or self.model != models[self.provider] or type(self.budget_nano_usd) is not int
+        if (not isinstance(self.provider, str) or self.provider not in MODELS
+                or self.model != MODELS[self.provider] or type(self.budget_nano_usd) is not int
                 or not 1 <= self.budget_nano_usd <= MAX_PROJECT_BUDGET):
             raise ModelError("MODEL_CONFIG_INVALID")
 
@@ -105,6 +105,7 @@ class Response:
     elapsed_ms: int
     content_sha256: str | None = None
     error: str | None = None
+    usage_uncertain: bool = False
     version: int = 1
 
 
@@ -150,7 +151,8 @@ class ModelBoundary:
         with self._lock:
             return request_id in self._receipts
 
-    def call(self, request: Request, cancellation: Event | None = None) -> Result:
+    def call(self, request: Request, cancellation: Event | None = None, *, pre_reserved: bool = False) -> Result:
+        """Use the in-memory ledger unless the receiver has already reserved the call in SQLite."""
         cancellation = cancellation if cancellation is not None else Event()
         self._validate(request)
         if cancellation.is_set():
@@ -163,33 +165,36 @@ class ModelBoundary:
         result = None
         abort_code = None
         with self._lock:
-            if request.request_id in self._receipts:
+            if not pre_reserved and request.request_id in self._receipts:
                 raise ModelError("MODEL_REQUEST_CONFLICT")
             if project in self._active or len(self._active) >= MAX_CONCURRENCY:
                 raise ModelError("MODEL_BUSY")
-            attempts = self._attempts.get(session, 0)
-            if attempts >= 1 + MAX_CLARIFICATIONS:
-                raise ModelError("MODEL_ROUND_LIMIT")
-            if self._spent.get(project, 0) + amount > self.config.budget_nano_usd:
-                raise ModelError("MODEL_BUDGET_EXHAUSTED")
-            self._reserved[project] = amount
-            self._attempts[session] = attempts + 1
-            self._receipts[request.request_id] = None
+            if not pre_reserved:
+                attempts = self._attempts.get(session, 0)
+                if attempts >= 1 + MAX_CLARIFICATIONS:
+                    raise ModelError("MODEL_ROUND_LIMIT")
+                if self._spent.get(project, 0) + amount > self.config.budget_nano_usd:
+                    raise ModelError("MODEL_BUDGET_EXHAUSTED")
+                self._reserved[project] = amount
+                self._attempts[session] = attempts + 1
+                self._receipts[request.request_id] = None
             self._active.add(project)
 
         def run():
             nonlocal result
             try:
-                reply = self.provider.invoke(request, stop)
+                reply = (ProviderReply(None, Usage(0, 0), "MODEL_CANCELLED", 0)
+                         if stop.is_set() else self.provider.invoke(request, stop))
                 result = self._settle(request, reply, amount, started)
             except Exception:
                 result = self._settle(request, ProviderReply(None, None, "MODEL_UNAVAILABLE"), amount, started)
             with self._lock:
                 if abort_code:
                     result = Result(replace(result.receipt, error=abort_code, content_sha256=None), None)
-                self._spent[project] = self._spent.get(project, 0) + result.receipt.charged_nano_usd
-                del self._reserved[project]
-                self._receipts[request.request_id] = result.receipt
+                if not pre_reserved:
+                    self._spent[project] = self._spent.get(project, 0) + result.receipt.charged_nano_usd
+                    del self._reserved[project]
+                    self._receipts[request.request_id] = result.receipt
                 self._active.remove(project)
                 done.set()
 
@@ -197,9 +202,10 @@ class ModelBoundary:
             Thread(target=run, daemon=True).start()
         except RuntimeError:
             with self._lock:
-                del self._reserved[project]
-                del self._receipts[request.request_id]
-                self._attempts[session] = attempts
+                if not pre_reserved:
+                    del self._reserved[project]
+                    del self._receipts[request.request_id]
+                    self._attempts[session] = attempts
                 self._active.remove(project)
             raise ModelError("MODEL_UNAVAILABLE") from None
 
@@ -211,6 +217,8 @@ class ModelBoundary:
                         return result
                     abort_code = "MODEL_CANCELLED" if cancellation.is_set() else "MODEL_TIMEOUT"
                     stop.set()
+                if pre_reserved:
+                    return self._settle(request, ProviderReply(None, None, abort_code), amount, started)
                 raise ModelError(abort_code)
             if done.wait(min(0.025, remaining)):
                 return result
@@ -238,7 +246,7 @@ class ModelBoundary:
                  and all(type(number) is int for number in (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens))
                  and 0 <= usage.cached_input_tokens <= usage.input_tokens <= self.rate.max_input_tokens
                  and 0 <= usage.output_tokens <= request.output_tokens)
-        if self.config.provider == "kakou":
+        if reply.billed_nano_usd is not None or self.config.provider == "kakou":
             known = known and type(reply.billed_nano_usd) is int and 0 <= reply.billed_nano_usd <= amount
         cost = amount
         if known:
@@ -258,8 +266,8 @@ class ModelBoundary:
             except (AttributeError, ProtocolError, RecursionError, ValueError):
                 candidate, error = None, "MODEL_INVALID_OUTPUT"
         return Result(Response(
-            request.request_id, self.config.model, request.prompt_version, amount, cost, usage if isinstance(usage, Usage) else None,
-            known and reply.exact_bill, round((monotonic() - started) * 1000), digest, error,
+            request.request_id, self.config.model, request.prompt_version, amount, cost, usage if known else None,
+            known and reply.exact_bill, round((monotonic() - started) * 1000), digest, error, usage_uncertain=not known,
         ), candidate)
 
 
