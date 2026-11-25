@@ -194,6 +194,40 @@ class StageB6Tests(unittest.TestCase):
             self.assertFalse(self.version.exists())
 
 
+def verify_review(phone, review, decision, check_fields=False):
+    phone.tap("审阅完整规格")
+    nodes = phone.expect("审阅规格", "返回会话", f"规格版本 {review['specVersion']}")
+    draft = json.loads(review["specJson"])
+    expected = [draft["title"], draft["goal"], f"审阅摘要 SHA-256 {review['specSha256']}"]
+    if check_fields:
+        expected += ["页面与用途", "数据集合与字段", "保存数据", "操作流程", "权限及理由", "验收条件"]
+        for page in draft["pages"]:
+            expected.append(f"{page['name']} · {page['id']} {page['purpose']}")
+        for collection in draft["collections"]:
+            expected += [collection["id"]]
+            for field in collection["fields"]:
+                required = "必填" if field["required"] else "选填"
+                expected.append(f"{field['id']} · {field['type']} · {required} · maxLength {field['maxLength']}")
+        for flow in draft["workflows"]:
+            expected.append(f"{flow['id']} · {flow['trigger']}")
+            expected.extend(f"{index}. {step}" for index, step in enumerate(flow["steps"], 1))
+        expected.extend(f"{item['capability']} · {item['justification']}" for item in draft["permissions"])
+        for item in draft["unsupportedItems"]:
+            expected.extend([f"不支持的请求 {item['request']}", item["reason"], f"替代方案 {item['alternative']}"])
+        expected.extend(f"{item['id']} · {item['scenario']} {item['expected']}" for item in draft["acceptanceCriteria"])
+    scrolling = next(node for node in nodes if node.get("scrollable") == "true")
+    x1, top, x2, bottom = map(int, re.findall(r"\d+", scrolling.get("bounds")))
+    x = str((x1 + x2) // 2)
+    observed = set()
+    for _ in range(10):
+        observed.update(" ".join(node.get("text", "").split()) for node in nodes)
+        if decision in observed:
+            break
+        phone.shell("input", "swipe", x, str(bottom - 60), x, str(top + 60), "400")
+        nodes = phone.nodes()
+    assert set(expected) <= observed, f"Missing review fields: {set(expected) - observed}"
+    phone.tap(decision)
+
 def android_acceptance(serial):
     b3 = runpy.run_path(str(ROOT / "scripts/verify-stage-b3.py"))
     a5 = b3["A5"]
@@ -226,40 +260,6 @@ def android_acceptance(serial):
         phone.expect("规格等待审阅", "审阅完整规格")
         return message
 
-    def verify_review(review, decision, check_fields=False):
-        phone.tap("审阅完整规格")
-        nodes = phone.expect("审阅规格", "返回会话", f"规格版本 {review['specVersion']}")
-        draft = json.loads(review["specJson"])
-        expected = [draft["title"], draft["goal"], f"审阅摘要 SHA-256 {review['specSha256']}"]
-        if check_fields:
-            expected += ["页面与用途", "数据集合与字段", "保存数据", "操作流程", "权限及理由", "验收条件"]
-            for page in draft["pages"]:
-                expected.append(f"{page['name']} · {page['id']} {page['purpose']}")
-            for collection in draft["collections"]:
-                expected += [collection["id"]]
-                for field in collection["fields"]:
-                    required = "必填" if field["required"] else "选填"
-                    expected.append(f"{field['id']} · {field['type']} · {required} · maxLength {field['maxLength']}")
-            for flow in draft["workflows"]:
-                expected.append(f"{flow['id']} · {flow['trigger']}")
-                expected.extend(f"{index}. {step}" for index, step in enumerate(flow["steps"], 1))
-            expected.extend(f"{item['capability']} · {item['justification']}" for item in draft["permissions"])
-            for item in draft["unsupportedItems"]:
-                expected.extend([f"不支持的请求 {item['request']}", item["reason"], f"替代方案 {item['alternative']}"])
-            expected.extend(f"{item['id']} · {item['scenario']} {item['expected']}" for item in draft["acceptanceCriteria"])
-        scrolling = next(node for node in nodes if node.get("scrollable") == "true")
-        x1, top, x2, bottom = map(int, re.findall(r"\d+", scrolling.get("bounds")))
-        x = str((x1 + x2) // 2)
-        observed = set()
-        for _ in range(10):
-            observed.update(" ".join(node.get("text", "").split()) for node in nodes)
-            if decision in observed:
-                break
-            phone.shell("input", "swipe", x, str(bottom - 60), x, str(top + 60), "400")
-            nodes = phone.nodes()
-        assert set(expected) <= observed, f"Missing review fields: {set(expected) - observed}"
-        phone.tap(decision)
-
     reverse = None
     try:
         with TemporaryDirectory(prefix="stage-b6-android-") as scratch:
@@ -280,7 +280,7 @@ def android_acceptance(serial):
             phone.open_project("B6 acceptance project")
             phone.expect("规格等待审阅", "审阅完整规格")
             with b3["Console"](home, "127.0.0.1", port, spec_store=store) as receiver:
-                verify_review(review, "确认此规格", check_fields=True)
+                verify_review(phone, review, "确认此规格", check_fields=True)
                 phone.expect("规格已确认", "规格版本 1")
                 receipt = latest(home, accepted["id"])
                 event = latest(home, accepted["id"], "phone")
@@ -305,7 +305,7 @@ def android_acceptance(serial):
                 a5["wait_for"](lambda: latest(home, rejected["id"])["sequence"] > initial["sequence"]
                                and latest(home, rejected["id"])["type"] == "desktop.review", "revised review")
                 phone.tap("刷新规格会话")
-                verify_review(latest(home, rejected["id"]), "拒绝此规格")
+                verify_review(phone, latest(home, rejected["id"]), "拒绝此规格")
                 phone.expect("规格已拒绝")
                 phone.launch()
                 phone.open_project("B6 rejection project")

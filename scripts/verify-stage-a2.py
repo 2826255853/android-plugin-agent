@@ -105,10 +105,30 @@ import sys
 from functools import partial
 from pathlib import Path
 
-directory, spec_store, *args = sys.argv[1:]
+directory, spec_store, relay_usage, *args = sys.argv[1:]
 sys.path.insert(0, directory)
 sys.argv[1:] = args
 import desktop_receiver
+
+if relay_usage:
+    import json
+    import relay_model
+
+    exchange = relay_model._exchange
+
+    def record_usage(path, payload, key, timeout):
+        response = exchange(path, payload, key, timeout)
+        if path == "/v1/responses" and "usage" in response:
+            usage = response["usage"]
+            if isinstance(usage, dict) and isinstance(usage.get("input_tokens_details"), dict):
+                counts = (usage.get("input_tokens"), usage.get("output_tokens"),
+                          usage["input_tokens_details"].get("cached_tokens"))
+                if all(type(count) is int for count in counts):
+                    with Path(relay_usage).open("a", encoding="ascii") as output:
+                        output.write(json.dumps(counts) + "\\n")
+        return response
+
+    relay_model._exchange = record_usage
 
 desktop_receiver.Receiver = partial(desktop_receiver.Receiver, spec_store=Path(spec_store))
 sys.exit(desktop_receiver.main())
@@ -118,15 +138,18 @@ sys.exit(desktop_receiver.main())
 class Console:
     def __init__(self, home: Path, address: str, port: int = 0, *,
                  interrupt: str | None = None, reply_fault: Path | None = None, spec_store: Path | None = None,
-                 model_budget: int | None = None):
+                 model_budget: int | None = None, relay_usage: Path | None = None):
         command = [sys.executable, SCRIPT]
         if interrupt:
             command = [sys.executable, "-c", INTERRUPT, SCRIPT.parent, interrupt]
         elif reply_fault is not None:
             command = [sys.executable, "-c", REPLY_FAULTS, SCRIPT.parent, reply_fault]
         elif spec_store is not None:
-            command = [sys.executable, "-c", ISOLATED_SPEC_STORE, SCRIPT.parent, spec_store]
+            command = [sys.executable, "-c", ISOLATED_SPEC_STORE, SCRIPT.parent, spec_store,
+                       str(relay_usage) if relay_usage is not None else ""]
         command += ["start", "--bind", address, "--port", str(port)]
+        if relay_usage is not None:
+            command += ["--model-provider", "kakou"]
         if model_budget is not None:
             command += ["--model-budget-nano-usd", str(model_budget)]
         self.process = subprocess.Popen(
