@@ -123,6 +123,12 @@ class TaskStore:
                     task_id TEXT PRIMARY KEY, repair_round INTEGER NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
+                CREATE TABLE IF NOT EXISTS confirmation_tasks (
+                    confirmation_event_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                    spec_version INTEGER NOT NULL, spec_sha256 TEXT NOT NULL,
+                    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+                    UNIQUE(project_id, spec_version)
+                );
             """)
 
     @contextmanager
@@ -214,6 +220,56 @@ class TaskStore:
             self._event(db, task, "TASK_CREATED")
         return self.inspect(task_id)
 
+    def bind_confirmed_spec(self, spec: dict[str, Any], *, confirmation_event_id: str,
+                            expected_sha256: str, max_cost_micros: int,
+                            max_duration_seconds: int = 600, max_repair_rounds: int = 3,
+                            max_tool_calls: int = 128) -> dict[str, Any]:
+        """Idempotently bind one persisted confirmation event to its task snapshot."""
+        need(isinstance(confirmation_event_id, str) and 1 <= len(confirmation_event_id) <= 128,
+             "INVALID_CONFIRMATION_EVENT")
+        payload = encoded(spec)
+        need(digest(payload) == expected_sha256, "SPEC_SHA256_MISMATCH")
+        need(len(payload) <= FILE_BYTES, "SPEC_TOO_LARGE")
+        try:
+            validate_spec(spec, require_confirmable=True)
+        except (SpecError, TypeError, ValueError, RecursionError) as exc:
+            raise TaskError("INVALID_SPEC") from exc
+        need(spec["status"] == "confirmed", "SPEC_NOT_CONFIRMED")
+        need(integer(max_cost_micros, 1, 10**12), "INVALID_COST_LIMIT")
+        need(integer(max_duration_seconds, 1, 600), "INVALID_TIME_LIMIT")
+        need(integer(max_repair_rounds, 0, 3), "INVALID_REPAIR_LIMIT")
+        need(integer(max_tool_calls, 1, 128), "INVALID_TOOL_LIMIT")
+        project_id, version = spec["projectId"], spec["version"]
+        limits = {"maxCostMicros": max_cost_micros, "currency": "USD",
+                  "maxDurationSeconds": max_duration_seconds, "maxRepairRounds": max_repair_rounds,
+                  "maxToolCalls": max_tool_calls}
+        with self._transaction() as db:
+            existing = db.execute("""SELECT c.*, t.spec_json FROM confirmation_tasks c
+                JOIN tasks t ON t.id = c.task_id WHERE c.confirmation_event_id = ?""",
+                                  (confirmation_event_id,)).fetchone()
+            if existing is not None:
+                need(existing["project_id"] == project_id and existing["spec_version"] == version
+                     and existing["spec_sha256"] == expected_sha256
+                     and existing["spec_json"] == payload.decode("utf-8"), "CONFIRMATION_EVENT_CONFLICT")
+                task_id = existing["task_id"]
+            else:
+                conflict = db.execute("SELECT * FROM confirmation_tasks WHERE project_id = ? AND spec_version = ?",
+                                      (project_id, version)).fetchone()
+                need(conflict is None, "SPEC_VERSION_CONFLICT")
+                task_id = "task-" + uuid.uuid4().hex
+                now = self.clock()
+                db.execute("""INSERT INTO tasks(id, project_id, spec_version, spec_sha256, spec_json,
+                    status, created_at, updated_at, limits_json) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?)""",
+                           (task_id, project_id, version, expected_sha256, payload.decode("utf-8"),
+                            now, now, encoded(limits).decode("utf-8")))
+                db.execute("""INSERT INTO confirmation_tasks(confirmation_event_id, project_id,
+                    spec_version, spec_sha256, task_id) VALUES (?, ?, ?, ?, ?)""",
+                           (confirmation_event_id, project_id, version, expected_sha256, task_id))
+                task = self._task(db, task_id)
+                self._event(db, task, "CONFIRMED_SPEC_BOUND", confirmationEventId=confirmation_event_id,
+                            specVersion=version, specSha256=expected_sha256)
+        return self.inspect(task_id)
+
     def _start(self, db: sqlite3.Connection, task: dict[str, Any]) -> str | None:
         path = self.workspaces / task["id"]
         try:
@@ -270,9 +326,12 @@ class TaskStore:
                 "SELECT seq, path, before_sha256, after_sha256 FROM patches WHERE task_id = ? ORDER BY seq", (task_id,))]
             builds = [json.loads(row[0]) for row in db.execute(
                 "SELECT report_json FROM builds WHERE task_id = ? ORDER BY seq", (task_id,))]
+            binding = db.execute("SELECT confirmation_event_id FROM confirmation_tasks WHERE task_id = ?",
+                                 (task_id,)).fetchone()
             elapsed = 0 if task["started_at"] is None else max(0, (task["finished_at"] or self.clock()) - task["started_at"])
             return self._result(task, projectId=task["project_id"], specVersion=task["spec_version"],
                                 specSha256=task["spec_sha256"], limits=json.loads(task["limits_json"]),
+                                confirmationEventId=binding[0] if binding else None,
                                 startedAt=task["started_at"], deadline=task["deadline"],
                                 finishedAt=task["finished_at"], elapsedSeconds=elapsed, patches=patches,
                                 spentMicros=task["spent_micros"], reservedMicros=task["reserved_micros"],

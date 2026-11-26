@@ -38,7 +38,8 @@ DEFAULT_MODEL_CONFIG = Config("mock", MOCK_MODEL, 25_000_000)
 
 
 class DialogueCoordinator:
-    def __init__(self, inbox, provider=None, *, config=DEFAULT_MODEL_CONFIG, spec_store=SPEC_DIRECTORY / "projects"):
+    def __init__(self, inbox, provider=None, *, config=DEFAULT_MODEL_CONFIG, spec_store=SPEC_DIRECTORY / "projects",
+                 task_store=None, task_max_cost_micros=1_000_000):
         self.database = inbox.database
         self.lock = inbox.database_lock
         self.changed = threading.Event()
@@ -48,6 +49,8 @@ class DialogueCoordinator:
         self.config = config
         self.model = ModelBoundary(self.config, provider if provider is not None else MockProvider())
         self.spec_store = spec_store
+        self.task_store = task_store
+        self.task_max_cost_micros = task_max_cost_micros
         self.database.executescript("""
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS dialogue_sessions (
@@ -631,6 +634,11 @@ class DialogueCoordinator:
             self._publish(key, "desktop.error", code="SPEC_MISMATCH")
             return "SPEC_MISMATCH"
         saved_digest = hashlib.sha256(saved_json.encode("utf-8")).hexdigest()
+        if self.task_store is not None:
+            self.task_store.bind_confirmed_spec(
+                load_json(destination), confirmation_event_id=event["eventId"],
+                expected_sha256=saved_digest, max_cost_micros=self.task_max_cost_micros,
+            )
         self._record_submission(key, event)
         self._publish(
             key, "desktop.status", state="confirmed", specVersion=version,

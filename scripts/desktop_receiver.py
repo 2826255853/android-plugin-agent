@@ -33,6 +33,7 @@ from dialogue_protocol import strict_object, validate as validate_dialogue
 from model_boundary import MODELS, Config, ModelError, MockProvider
 from openai_model import OpenAIProvider
 from receiver_inbox import Inbox
+from task_runtime import DEFAULT_STORE as DEFAULT_TASK_STORE, TaskStore
 from receiver_storage import ReceiverStorage, StorageError
 from relay_model import RelayProvider
 from spec_workflow import SPEC_DIRECTORY
@@ -124,11 +125,14 @@ class PendingPair:
 
 class Receiver:
     def __init__(self, storage: ReceiverStorage, fingerprint: str, inbox: Inbox,
-                 *, spec_store: Path = SPEC_DIRECTORY / "projects", model_config=DEFAULT_MODEL_CONFIG, provider=None):
+                 *, spec_store: Path = SPEC_DIRECTORY / "projects", model_config=DEFAULT_MODEL_CONFIG, provider=None,
+                 task_store: TaskStore | None = None, task_max_cost_micros: int = 1_000_000):
         self.storage = storage
         self.fingerprint = fingerprint
         self.message_store = inbox
-        self.dialogue = DialogueCoordinator(inbox, provider, config=model_config, spec_store=spec_store)
+        self.dialogue = DialogueCoordinator(inbox, provider, config=model_config, spec_store=spec_store,
+                                            task_store=task_store,
+                                            task_max_cost_micros=task_max_cost_micros)
         self.devices = storage.load_devices()
         self.lock = threading.Lock()
         self.code: tuple[str, datetime] | None = None
@@ -622,6 +626,10 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8443, metavar="PORT")
     parser.add_argument("--model-provider", choices=MODELS, default=DEFAULT_MODEL_CONFIG.provider)
     parser.add_argument("--model-budget-nano-usd", type=int, help="cumulative budget per project (required for real models)")
+    parser.add_argument("--generation-task-store", type=Path, default=DEFAULT_TASK_STORE,
+                        help="persistent confirmed-spec task ledger")
+    parser.add_argument("--generation-max-cost-micros", type=int, default=1_000_000,
+                        help="per-task generation budget in USD micros")
     args = parser.parse_args()
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
@@ -642,7 +650,9 @@ def main() -> int:
                 autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL,
             )) as database, ReceiverServer(
                 (args.bind, args.port), context,
-                Receiver(storage, fingerprint, Inbox(database), model_config=config, provider=provider)
+                Receiver(storage, fingerprint, Inbox(database), model_config=config, provider=provider,
+                         task_store=TaskStore(args.generation_task_store),
+                         task_max_cost_micros=args.generation_max_cost_micros)
             ) as server:
                 server.receiver.dialogue.start()
                 worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})

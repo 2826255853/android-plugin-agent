@@ -1,5 +1,11 @@
 # 变更记录
 
+## 2026-11-26
+
+- **变更：**完成阶段 C.2。确认协调器从持久化 confirmed 规格重新读取并校验后，按确认事件 ID 幂等创建 `ready` 任务；任务仓储保存项目/版本/摘要映射和规格快照，电脑接收服务提供任务库位置及任务费用上限配置。新增 C.2 回归和阶段说明，并同步后续规划与项目介绍。
+- **原因/影响：**重复确认、并发登记及保存规格后发生中断时，均复用同一个任务；草案、摘要不符和项目版本冲突不会启动生成。任务留在 `ready`，未触发模型调用或代码执行。
+- **验证：**`python scripts/verify-stage-c2.py` 的 4 项绑定/恢复回归、`python scripts/verify-stage-b6.py` 的 6 项确认回归、`python scripts/verify-stage-c1.py` 的 4 项模板回归、`python scripts/verify-stage22.py` 的 29 项任务仓储回归、`python scripts/verify-stage-b8.py` 的 B.1–B.7 桌面回归、Python 编译、`android-app/gradlew.bat :app:assembleDebug` 和 `git diff --check` 均通过。B.8 Android 模拟器验收未运行，本阶段未改动 Android 行为。
+
 ## 2026-11-25
 
 - **变更** 完成阶段 C.1。生成器新增版本化手动联系人簿模板和配套规格样例；新增合法/越界协议 ZIP 夹具、桌面回归及 Android 模拟器系统选包、数据授权和重启恢复验收。同步 C.1 阶段说明、后续规划、项目介绍及 Android 验证记录。
