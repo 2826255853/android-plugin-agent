@@ -526,6 +526,104 @@ class TaskStore:
             self._guard(db, task)
             return self._result(task)
 
+    def apply_patch_batch(self, task_id: str, patches: list[dict[str, Any]]) -> dict[str, Any]:
+        """Apply a coordinator-validated patch set as one workspace revision."""
+        need(isinstance(patches, list) and 1 <= len(patches) <= FILE_COUNT, "INVALID_PATCH_SET")
+        with self._transaction() as db:
+            task = self._task(db, task_id)
+            error = self._guard(db, task)
+            if error:
+                return self._result(task, error)
+            need(task["status"] == "generating", "TASK_NOT_RUNNING")
+            need(task["last_error_round"] != task["repair_rounds"], "REPAIR_REQUIRED")
+            base = self.workspaces / task_id
+            current = self._inventory(task)
+            seen: set[str] = set()
+            prepared = []
+            total = sum(current.values())
+            for patch in patches:
+                need(isinstance(patch, dict) and set(patch) == {"path", "expectedSha256", "content"},
+                     "INVALID_PATCH_SET")
+                relative = patch["path"]
+                need(relative not in seen, "INVALID_PATCH_SET")
+                seen.add(relative)
+                path = self._path(task, relative)
+                content_value = patch["content"]
+                need(isinstance(content_value, str), "INVALID_PATCH_SET")
+                try:
+                    content = content_value.encode("utf-8")
+                except UnicodeError:
+                    raise TaskError("INVALID_PATCH_SET") from None
+                need(len(content) <= FILE_BYTES, "FILE_LIMIT")
+                expected = patch["expectedSha256"]
+                need(expected is None or (isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{64}", expected)),
+                     "INVALID_PATCH_SET")
+                before = path.read_bytes() if path.is_file() else None
+                need((before is None and expected is None)
+                     or (before is not None and expected == digest(before)), "PATCH_CONFLICT")
+                total += len(content) - (len(before) if before is not None else 0)
+                prepared.append((relative, path, before, content, expected))
+            need(len(current) + sum(item[0] not in current for item in prepared) <= FILE_COUNT
+                 and total <= WORKSPACE_BYTES, "WORKSPACE_LIMIT")
+
+            staged: list[tuple[Path, Path]] = []
+            replaced: list[tuple[Path, bytes | None]] = []
+            try:
+                for relative, path, before, content, _ in prepared:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    fd, temporary = tempfile.mkstemp(prefix=".revision-", dir=path.parent)
+                    temporary_path = Path(temporary)
+                    staged.append((temporary_path, path))
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(content)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                for (temporary, path), (_, _, before, _, _) in zip(staged, prepared):
+                    need(self.clock() < task["deadline"], "TIME_LIMIT")
+                    os.replace(temporary, path)
+                    replaced.append((path, before))
+            except BaseException:
+                for path, before in reversed(replaced):
+                    if before is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        fd, rollback = tempfile.mkstemp(prefix=".rollback-", dir=path.parent)
+                        with os.fdopen(fd, "wb") as stream:
+                            stream.write(before)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        os.replace(rollback, path)
+                raise
+            finally:
+                for temporary, _ in staged:
+                    temporary.unlink(missing_ok=True)
+
+            try:
+                for relative, _, before, content, expected in prepared:
+                    after_sha256 = digest(content)
+                    db.execute("""INSERT INTO patches(task_id, path, before_sha256, after_sha256,
+                               before_content, after_content) VALUES (?, ?, ?, ?, ?, ?)""",
+                               (task_id, relative, expected, after_sha256, before, content))
+                    self._event(db, task, "FILE_PATCHED", path=relative, beforeSha256=expected,
+                                sha256=after_sha256, sizeBytes=len(content))
+                self._event(db, task, "PATCH_REVISION_COMMITTED", patchCount=len(prepared),
+                            repairRound=task["repair_rounds"])
+            except BaseException:
+                for path, before in reversed(replaced):
+                    if before is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        fd, rollback = tempfile.mkstemp(prefix=".rollback-", dir=path.parent)
+                        with os.fdopen(fd, "wb") as stream:
+                            stream.write(before)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        os.replace(rollback, path)
+                raise
+            return self._result(task, patchCount=len(prepared), patches=[
+                {"path": relative, "beforeSha256": expected, "afterSha256": digest(content)}
+                for relative, _, _, content, expected in prepared])
+
     def _path(self, task: dict[str, Any], relative: Any) -> Path:
         need(isinstance(relative, str) and 0 < len(relative) <= 192, "WORKSPACE_ESCAPE")
         parts = relative.split("/")

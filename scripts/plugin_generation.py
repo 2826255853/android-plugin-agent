@@ -34,6 +34,10 @@ TEMPLATES = {
         ROOT / "desktop-spec" / "examples" / "manual-contacts-v1.json",
     ),
 }
+STATIC_CHECKS = (
+    "confirmed_spec_binding", "manifest_contract", "resource_integrity", "local_resource_references",
+    "page_structure", "field_limits", "package_roundtrip",
+)
 
 
 class GenerationError(ValueError):
@@ -162,8 +166,7 @@ def run_static_tests(files: dict[str, bytes], spec: dict[str, Any]) -> list[str]
     primary_field = "title" if template_id == "quick-notes" else "name"
     require("required" in parser.ids[primary_field] and "hidden" in parser.ids["editor-page"],
             "STATIC_TEST_FAILED", "index.html", "form_contract")
-    return ["confirmed_spec_binding", "manifest_contract", "resource_integrity", "local_resource_references",
-            "page_structure", "field_limits", "package_roundtrip"]
+    return list(STATIC_CHECKS)
 
 
 class GenerationPipeline:

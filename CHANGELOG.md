@@ -2,6 +2,10 @@
 
 ## 2026-11-26
 
+- **变更：**完成阶段 C.3。新增 `plugin-development-v1` 响应 Schema、复用阶段 B 模型边界校验固定响应，并完成规格/路径/检查项/能力/基线摘要校验；任务运行时支持多文件原子补丁修订并保留前后摘要和修订事件。新增 C.3 回归与阶段说明，同步 C.2 阶段边界、后续规划和项目介绍。
+- **原因/影响：**拒绝无效 JSON、超长输出、未知规格引用或检查项、模板白名单外路径、能力扩展及过期文件摘要。多文件提交中断会恢复原文件，失败修订不进入补丁历史或后续验证。本阶段使用固定响应，不调用模型提供方，不执行代码或构建。
+- **验证：**`python scripts/verify-stage-c3.py` 的 6 项固定响应/故障回归、C.2 的 4 项回归、C.1 的 4 项回归、任务工具的 29 项回归、阶段 2.3 的 30 项回归及 B.1–B.7 桌面回归通过；Python 编译、响应 Schema JSON 解析、`android-app/gradlew.bat :app:assembleDebug` 和 `git diff --check` 通过。未运行 Android 模拟器，因为 C.3 不改变 Android 行为。
+
 - **变更：**完成阶段 C.2。确认协调器从持久化 confirmed 规格重新读取并校验后，按确认事件 ID 幂等创建 `ready` 任务；任务仓储保存项目/版本/摘要映射和规格快照，电脑接收服务提供任务库位置及任务费用上限配置。新增 C.2 回归和阶段说明，并同步后续规划与项目介绍。
 - **原因/影响：**重复确认、并发登记及保存规格后发生中断时，均复用同一个任务；草案、摘要不符和项目版本冲突不会启动生成。任务留在 `ready`，未触发模型调用或代码执行。
 - **验证：**`python scripts/verify-stage-c2.py` 的 4 项绑定/恢复回归、`python scripts/verify-stage-b6.py` 的 6 项确认回归、`python scripts/verify-stage-c1.py` 的 4 项模板回归、`python scripts/verify-stage22.py` 的 29 项任务仓储回归、`python scripts/verify-stage-b8.py` 的 B.1–B.7 桌面回归、Python 编译、`android-app/gradlew.bat :app:assembleDebug` 和 `git diff --check` 均通过。B.8 Android 模拟器验收未运行，本阶段未改动 Android 行为。

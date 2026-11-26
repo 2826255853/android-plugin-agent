@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://android-plugin-agent.invalid/schemas/plugin-development-response-v1.schema.json",
+  "title": "Plugin development patch response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "patches"],
+  "properties": {
+    "version": {"const": "plugin-development-v1"},
+    "patches": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["plan", "specRef", "path", "expectedSha256", "replacement", "expectedChecks"],
+        "properties": {
+          "plan": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "specRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "id"],
+            "properties": {
+              "type": {"enum": ["pages", "workflows", "acceptanceCriteria", "collections", "fields", "unsupportedItems"]},
+              "id": {"type": "string", "minLength": 1, "maxLength": 128}
+            }
+          },
+          "path": {"type": "string", "minLength": 1, "maxLength": 240},
+          "expectedSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "replacement": {"type": "string", "maxLength": 262144},
+          "expectedChecks": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"enum": ["confirmed_spec_binding", "manifest_contract", "resource_integrity", "local_resource_references", "page_structure", "field_limits", "package_roundtrip"]}
+          }
+        }
+      }
+    }
+  }
+}
