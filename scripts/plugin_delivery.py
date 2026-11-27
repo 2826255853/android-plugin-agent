@@ -119,6 +119,74 @@ def export_delivery(store: TaskStore, task_id: str, directory: Path) -> dict[str
     return receipt
 
 
+def artifact_record(store: TaskStore, package_sha256: str) -> dict[str, Any]:
+    require(re.fullmatch(r"[0-9a-f]{64}", package_sha256) is not None, "INVALID_PACKAGE_HASH")
+    matches = []
+    with store._transaction() as db:
+        rows = db.execute(
+            "SELECT b.seq, b.report_json, b.package, t.id, t.project_id, t.spec_version, t.spec_sha256, t.spec_json "
+            "FROM builds b JOIN tasks t ON t.id = b.task_id WHERE b.package IS NOT NULL ORDER BY b.seq"
+        ).fetchall()
+        for row in rows:
+            payload = bytes(row["package"])
+            if digest(payload) != package_sha256:
+                continue
+            report = json.loads(row["report_json"])
+            spec = json.loads(row["spec_json"])
+            require(report.get("ok") is True and report.get("status") == "built"
+                    and report.get("deliverable") is False
+                    and report.get("artifact", {}).get("sha256") == package_sha256
+                    and report.get("specSha256") == row["spec_sha256"] == digest(encoded(spec))
+                    and report.get("specVersion") == row["spec_version"] == spec.get("version")
+                    and report.get("taskId") == row["id"]
+                    and spec.get("projectId") == row["project_id"], "BUILD_BINDING_MISMATCH")
+            matches.append({
+                "packageSha256": package_sha256,
+                "sizeBytes": len(payload),
+                "status": "built",
+                "deliverable": False,
+                "taskId": row["id"],
+                "projectId": row["project_id"],
+                "confirmationEventId": report.get("confirmationEventId"),
+                "specVersion": row["spec_version"],
+                "specSha256": row["spec_sha256"],
+                "templateVersion": report.get("templateVersion"),
+                "model": report.get("model"),
+                "sourceSha256": report.get("sourceSha256"),
+                "sourceRevision": report.get("sourceRevision", []),
+                "checks": report.get("checks", []),
+                "isolatedChecks": report.get("isolatedChecks", {}),
+                "modelAccounting": report.get("modelAccounting", {"spentMicros": 0, "reservedMicros": 0, "calls": []}),
+                "buildId": row["seq"],
+                "report": report,
+            })
+    require(bool(matches), "ARTIFACT_NOT_FOUND")
+    require(len(matches) == 1, "ARTIFACT_HASH_AMBIGUOUS")
+    return matches[0]
+
+
+def export_artifact(store: TaskStore, package_sha256: str, output: Path) -> dict[str, Any]:
+    record = artifact_record(store, package_sha256)
+    output = Path(os.path.abspath(output))
+    no_links(output.parent)
+    require(output.parent.is_dir(), "DELIVERY_NOT_FOUND")
+    require(not output.exists(), "DELIVERY_DESTINATION_EXISTS")
+    with store._transaction() as db:
+        row = db.execute("SELECT package FROM builds WHERE seq = ?", (record["buildId"],)).fetchone()
+        require(row is not None, "ARTIFACT_NOT_FOUND")
+        payload = bytes(row["package"])
+    require(digest(payload) == package_sha256, "PACKAGE_HASH_MISMATCH")
+    temporary = output.with_name("." + output.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(payload)
+        temporary.rename(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"path": str(output), "packageSha256": package_sha256, "sizeBytes": len(payload),
+            "status": "built", "deliverable": False, "taskId": record["taskId"]}
+
+
 class AdbTransport:
     """Opt-in, explicitly selected ADB transport with bounded commands."""
     def __init__(self, executable: str, serial: str, *, allow_physical: bool = False) -> None:
@@ -169,6 +237,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Export, verify and explicitly transfer a local development package.")
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE)
     commands = parser.add_subparsers(dest="command", required=True)
+    lookup = commands.add_parser("lookup", help="Resolve a successful immutable build by package SHA-256")
+    lookup.add_argument("package_sha256")
+    export_hash = commands.add_parser("export-sha", help="Export exact bytes from a retained build hash")
+    export_hash.add_argument("package_sha256")
+    export_hash.add_argument("--output", type=Path, required=True)
     for name in ("export", "verify", "push"):
         sub = commands.add_parser(name)
         sub.add_argument("task_id")
@@ -180,7 +253,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         store = TaskStore(args.store)
-        if args.command == "export":
+        if args.command == "lookup":
+            result = {"ok": True, **artifact_record(store, args.package_sha256)}
+        elif args.command == "export-sha":
+            result = {"ok": True, **export_artifact(store, args.package_sha256, args.output)}
+        elif args.command == "export":
             result = {"ok": True, "status": "exported", **export_delivery(store, args.task_id, args.directory)}
         elif args.command == "verify":
             result = {"ok": True, "status": "verified", **verify_delivery(store, args.task_id, args.directory)}

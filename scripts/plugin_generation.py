@@ -292,11 +292,13 @@ document.addEventListener("DOMContentLoaded", () => setTimeout(() => {{
         results["preview"] = preview_result
         return results
 
-    def run(self, task_id: str) -> dict[str, Any]:
+    def run(self, task_id: str, model_context: dict[str, Any] | None = None) -> dict[str, Any]:
         stage = "generating"
         claimed = False
         state = self.store.inspect(task_id)
-        report = {"taskId": task_id, "specSha256": state["specSha256"], "specVersion": state["specVersion"],
+        report = {"taskId": task_id, "projectId": state["projectId"],
+                  "confirmationEventId": state["confirmationEventId"],
+                  "specSha256": state["specSha256"], "specVersion": state["specVersion"],
                   "templateVersion": TEMPLATE_VERSION, "deliverable": False,
                   "executedGeneratedCode": False, "modelCalls": 0, "checks": []}
         try:
@@ -341,6 +343,15 @@ document.addEventListener("DOMContentLoaded", () => setTimeout(() => {{
                         "content": manifest_content}))
             report["sourceSha256"] = digest(encoded({name: digest(raw) for name, raw in sorted(snapshot.items())}))
             report["files"] = {name: digest(raw) for name, raw in sorted(snapshot.items())}
+            accounting = self.store.inspect(task_id)
+            report["model"] = model_context if accounting["modelCalls"] else None
+            report["sourceRevision"] = accounting["patches"]
+            report["modelAccounting"] = {
+                "spentMicros": accounting["spentMicros"],
+                "reservedMicros": accounting["reservedMicros"],
+                "calls": accounting["modelCalls"],
+            }
+            report["modelCalls"] = len(accounting["modelCalls"])
             validate_source(snapshot, "org.generated." + spec["projectId"])
             stage = "building"
             package = build_package(snapshot)

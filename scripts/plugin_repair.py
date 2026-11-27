@@ -32,7 +32,11 @@ class RepairCoordinator:
 
     def run(self, task_id: str) -> dict:
         while True:
-            report = self.pipeline.run(task_id)
+            report = self.pipeline.run(task_id, model_context={
+                "provider": self.config.provider,
+                "modelVersion": self.config.model,
+                "promptVersion": DEVELOPMENT_PROMPT_VERSION,
+            })
             if report.get("ok"):
                 return report
             task = self.store.inspect(task_id)

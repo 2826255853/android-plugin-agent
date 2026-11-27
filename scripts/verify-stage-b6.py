@@ -228,7 +228,7 @@ def verify_review(phone, review, decision, check_fields=False):
     assert set(expected) <= observed, f"Missing review fields: {set(expected) - observed}"
     phone.tap(decision)
 
-def android_acceptance(serial):
+def android_acceptance(serial, confirmed_output=None):
     b3 = runpy.run_path(str(ROOT / "scripts/verify-stage-b3.py"))
     a5 = b3["A5"]
     sdk = Path(os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or
@@ -271,7 +271,8 @@ def android_acceptance(serial):
                 reverse = f"tcp:{port}"
                 phone.adb("reverse", "--no-rebind", reverse, reverse)
                 a5["pair"](phone, receiver, [], address=f"https://127.0.0.1:{port}")
-                accepted = start_review(home, "B6 acceptance project", MOCK_UNSUPPORTED_REQUEST)
+                request = MOCK_NOTES_REQUEST if confirmed_output is not None else MOCK_UNSUPPORTED_REQUEST
+                accepted = start_review(home, "B6 acceptance project", request)
                 review = latest(home, accepted["id"])
                 assert review["type"] == "desktop.review"
                 assert not store.exists()
@@ -288,6 +289,14 @@ def android_acceptance(serial):
                 verify_saved(review, receipt, event, path)
                 assert event["type"] == "phone.confirm"
                 phone.expect(f"保存摘要 SHA-256 {receipt['savedSpecSha256']}")
+                if confirmed_output is not None:
+                    confirmed_output = Path(confirmed_output).resolve()
+                    confirmed_output.parent.mkdir(parents=True, exist_ok=True)
+                    confirmed_output.write_text(json.dumps({
+                        "confirmationEventId": event["eventId"],
+                        "specSha256": receipt["savedSpecSha256"],
+                        "spec": json.loads(path.read_text(encoding="utf-8")),
+                    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 print("PASS Android review fields, confirmation binding, and immutable version")
 
             with b3["Console"](home, "127.0.0.1", port, spec_store=store) as receiver:
@@ -325,10 +334,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--android", action="store_true")
     parser.add_argument("--serial", default=os.environ.get("ANDROID_SERIAL", "emulator-5554"))
+    parser.add_argument("--confirmed-output", type=Path,
+                        help="write the confirmed spec and phone event binding for a downstream acceptance")
     args, remaining = parser.parse_known_args()
     if args.android:
         if not args.serial.startswith("emulator-"):
             parser.error("--android requires an emulator serial")
-        android_acceptance(args.serial)
+        android_acceptance(args.serial, args.confirmed_output)
     else:
         unittest.main(argv=[__file__, *remaining], verbosity=2)
