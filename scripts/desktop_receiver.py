@@ -651,7 +651,8 @@ def main() -> int:
             )) as database, ReceiverServer(
                 (args.bind, args.port), context,
                 Receiver(storage, fingerprint, Inbox(database), model_config=config, provider=provider,
-                         task_store=TaskStore(args.generation_task_store),
+                         task_store=TaskStore(args.generation_task_store,
+                                              project_max_cost_micros=args.generation_max_cost_micros),
                          task_max_cost_micros=args.generation_max_cost_micros)
             ) as server:
                 server.receiver.dialogue.start()

@@ -36,7 +36,8 @@ FILE_COUNT = 64
 INPUT_BYTES = 512 * 1024
 MODEL_CALLS = 32
 SECURITY_ERRORS = {"WORKSPACE_ESCAPE", "WORKSPACE_UNSAFE", "TASK_ID_MISMATCH", "TOOL_NOT_ALLOWED",
-                   "PERMISSION_DENIED", "RESOURCE_HASH_MISMATCH", "PACKAGE_CORRUPT"}
+                   "PERMISSION_DENIED", "RESOURCE_HASH_MISMATCH", "PACKAGE_CORRUPT",
+                   "PATCH_PATH_NOT_ALLOWED", "PATCH_CAPABILITY_NOT_ALLOWED"}
 TASK_ID = re.compile(r"task-[0-9a-f]{32}")
 CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 PART = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -78,9 +79,12 @@ def no_links(path: Path) -> None:
 
 
 class TaskStore:
-    def __init__(self, root: Path = DEFAULT_STORE, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, root: Path = DEFAULT_STORE, *, clock: Callable[[], float] = time.time,
+                 project_max_cost_micros: int = 1_000_000) -> None:
         self.root = Path(os.path.abspath(root))
         self.clock = clock
+        need(integer(project_max_cost_micros, 1, 10**12), "INVALID_PROJECT_COST_LIMIT")
+        self.project_max_cost_micros = project_max_cost_micros
         no_links(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.workspaces = self.root / "workspaces"
@@ -107,7 +111,8 @@ class TaskStore:
                 CREATE INDEX IF NOT EXISTS task_events ON events(task_id, seq);
                 CREATE TABLE IF NOT EXISTS model_calls (
                     id TEXT PRIMARY KEY, task_id TEXT NOT NULL, reserved INTEGER NOT NULL,
-                    actual INTEGER, FOREIGN KEY(task_id) REFERENCES tasks(id)
+                    actual INTEGER, request_id TEXT, status TEXT NOT NULL DEFAULT 'reserved',
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
                 CREATE TABLE IF NOT EXISTS patches (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, path TEXT NOT NULL,
@@ -129,7 +134,17 @@ class TaskStore:
                     task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
                     UNIQUE(project_id, spec_version)
                 );
+                CREATE TABLE IF NOT EXISTS project_model_budgets (
+                    project_id TEXT PRIMARY KEY, max_cost_micros INTEGER NOT NULL
+                );
             """)
+            db.execute("""INSERT OR IGNORE INTO project_model_budgets(project_id, max_cost_micros)
+                SELECT DISTINCT project_id, ? FROM tasks""", (self.project_max_cost_micros,))
+            columns = {row[1] for row in db.execute("PRAGMA table_info(model_calls)")}
+            if "request_id" not in columns:
+                db.execute("ALTER TABLE model_calls ADD COLUMN request_id TEXT")
+            if "status" not in columns:
+                db.execute("ALTER TABLE model_calls ADD COLUMN status TEXT NOT NULL DEFAULT 'reserved'")
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -216,6 +231,8 @@ class TaskStore:
                        status, created_at, updated_at, limits_json) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?)""",
                        (task_id, spec["projectId"], spec["version"], digest(payload), payload.decode("utf-8"),
                         now, now, encoded(limits).decode("utf-8")))
+            db.execute("INSERT OR IGNORE INTO project_model_budgets(project_id, max_cost_micros) VALUES (?, ?)",
+                       (spec["projectId"], self.project_max_cost_micros))
             task = self._task(db, task_id)
             self._event(db, task, "TASK_CREATED")
         return self.inspect(task_id)
@@ -265,6 +282,8 @@ class TaskStore:
                 db.execute("""INSERT INTO confirmation_tasks(confirmation_event_id, project_id,
                     spec_version, spec_sha256, task_id) VALUES (?, ?, ?, ?, ?)""",
                            (confirmation_event_id, project_id, version, expected_sha256, task_id))
+                db.execute("INSERT OR IGNORE INTO project_model_budgets(project_id, max_cost_micros) VALUES (?, ?)",
+                           (project_id, self.project_max_cost_micros))
                 task = self._task(db, task_id)
                 self._event(db, task, "CONFIRMED_SPEC_BOUND", confirmationEventId=confirmation_event_id,
                             specVersion=version, specSha256=expected_sha256)
@@ -321,13 +340,19 @@ class TaskStore:
             events = [dict(row) for row in db.execute("SELECT * FROM events WHERE task_id = ? ORDER BY seq", (task_id,))]
             for event in events:
                 event["details"] = json.loads(event.pop("details_json"))
-            calls = [dict(row) for row in db.execute("SELECT id, reserved, actual FROM model_calls WHERE task_id = ?", (task_id,))]
+            calls = [dict(row) for row in db.execute(
+                "SELECT id, reserved, actual, request_id, status FROM model_calls WHERE task_id = ? ORDER BY rowid",
+                (task_id,))]
             patches = [dict(row) for row in db.execute(
                 "SELECT seq, path, before_sha256, after_sha256 FROM patches WHERE task_id = ? ORDER BY seq", (task_id,))]
             builds = [json.loads(row[0]) for row in db.execute(
                 "SELECT report_json FROM builds WHERE task_id = ? ORDER BY seq", (task_id,))]
             binding = db.execute("SELECT confirmation_event_id FROM confirmation_tasks WHERE task_id = ?",
                                  (task_id,)).fetchone()
+            project_budget = db.execute("""SELECT p.max_cost_micros,
+                COALESCE(SUM(t.spent_micros), 0), COALESCE(SUM(t.reserved_micros), 0)
+                FROM project_model_budgets p LEFT JOIN tasks t ON t.project_id = p.project_id
+                WHERE p.project_id = ? GROUP BY p.project_id""", (task["project_id"],)).fetchone()
             elapsed = 0 if task["started_at"] is None else max(0, (task["finished_at"] or self.clock()) - task["started_at"])
             return self._result(task, projectId=task["project_id"], specVersion=task["spec_version"],
                                 specSha256=task["spec_sha256"], limits=json.loads(task["limits_json"]),
@@ -335,6 +360,9 @@ class TaskStore:
                                 startedAt=task["started_at"], deadline=task["deadline"],
                                 finishedAt=task["finished_at"], elapsedSeconds=elapsed, patches=patches,
                                 spentMicros=task["spent_micros"], reservedMicros=task["reserved_micros"],
+                                projectBudget={"maxCostMicros": project_budget[0],
+                                               "spentMicros": project_budget[1],
+                                               "reservedMicros": project_budget[2]},
                                 repairRounds=task["repair_rounds"], toolCalls=task["tool_calls"],
                                 stopCode=task["stop_code"], events=events, modelCalls=calls, builds=builds)
 
@@ -498,8 +526,18 @@ class TaskStore:
             if task["spent_micros"] + task["reserved_micros"] + upper_cost_micros > json.loads(task["limits_json"])["maxCostMicros"]:
                 self._stop(db, task, "COST_LIMIT")
                 return self._result(task, "COST_LIMIT")
+            project_budget = db.execute("""SELECT p.max_cost_micros,
+                COALESCE(SUM(t.spent_micros), 0), COALESCE(SUM(t.reserved_micros), 0)
+                FROM project_model_budgets p LEFT JOIN tasks t ON t.project_id = p.project_id
+                WHERE p.project_id = ? GROUP BY p.project_id""", (task["project_id"],)).fetchone()
+            need(project_budget is not None, "PROJECT_BUDGET_MISSING")
+            if project_budget[1] + project_budget[2] + upper_cost_micros > project_budget[0]:
+                self._stop(db, task, "PROJECT_COST_LIMIT")
+                return self._result(task, "PROJECT_COST_LIMIT")
             call_id = "call-" + uuid.uuid4().hex
-            db.execute("INSERT INTO model_calls(id, task_id, reserved) VALUES (?, ?, ?)", (call_id, task_id, upper_cost_micros))
+            request_id = call_id.removeprefix("call-")
+            db.execute("INSERT INTO model_calls(id, task_id, reserved, request_id) VALUES (?, ?, ?, ?)",
+                       (call_id, task_id, upper_cost_micros, request_id))
             db.execute("UPDATE tasks SET reserved_micros = reserved_micros + ?, model_calls = model_calls + 1 WHERE id = ?",
                        (upper_cost_micros, task_id))
             self._event(db, task, "MODEL_COST_RESERVED", callId=call_id, upperCostMicros=upper_cost_micros)
@@ -515,7 +553,7 @@ class TaskStore:
             if call["actual"] is not None:
                 need(call["actual"] == actual_cost_micros, "CALL_ALREADY_SETTLED")
                 return self._result(task)
-            db.execute("UPDATE model_calls SET actual = ? WHERE id = ?", (actual_cost_micros, call_id))
+            db.execute("UPDATE model_calls SET actual = ?, status = 'settled' WHERE id = ?", (actual_cost_micros, call_id))
             db.execute("UPDATE tasks SET reserved_micros = reserved_micros - ?, spent_micros = spent_micros + ? WHERE id = ?",
                        (call["reserved"], actual_cost_micros, task_id))
             self._event(db, task, "MODEL_COST_SETTLED", callId=call_id, actualCostMicros=actual_cost_micros)
@@ -524,6 +562,21 @@ class TaskStore:
                 self._event(db, task, "COST_BOUND_BREACH", callId=call_id)
                 self._stop(db, task, "COST_BOUND_BREACH")
             self._guard(db, task)
+            return self._result(task)
+
+    def mark_model_call_uncertain(self, task_id: str, call_id: str, code: str) -> dict[str, Any]:
+        """Keep an unresolved reservation and permanently prevent automatic replay."""
+        need(isinstance(code, str) and CODE.fullmatch(code), "INVALID_FAILURE")
+        with self._transaction() as db:
+            task = self._task(db, task_id)
+            call = db.execute("SELECT status FROM model_calls WHERE id = ? AND task_id = ?",
+                              (call_id, task_id)).fetchone()
+            need(call is not None, "CALL_NOT_FOUND")
+            if call[0] == "settled":
+                return self._result(task, "CALL_ALREADY_SETTLED")
+            db.execute("UPDATE model_calls SET status = 'uncertain' WHERE id = ?", (call_id,))
+            self._event(db, task, "MODEL_CALL_UNCERTAIN", callId=call_id, errorCode=code)
+            self._stop(db, task, code)
             return self._result(task)
 
     def apply_patch_batch(self, task_id: str, patches: list[dict[str, Any]]) -> dict[str, Any]:

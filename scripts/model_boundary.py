@@ -18,6 +18,7 @@ PROMPT_VERSION = "spec-draft-v1"
 MOCK_MODEL = "fixture-v1"
 OPENAI_MODEL = "gpt-4o-mini-2024-07-18"
 RELAY_MODEL = "gpt-6.1-sol"
+DEVELOPMENT_PROMPT_VERSION = "plugin-development-v1"
 MAX_INPUT_BYTES = 24 * 1024
 MAX_OUTPUT_BYTES = 12 * 1024
 MAX_OUTPUT_TOKENS = 1024
@@ -226,7 +227,7 @@ class ModelBoundary:
     @staticmethod
     def _validate(request: Request):
         if (type(request.version) is not int or request.version != 1
-                or request.prompt_version not in (PROMPT_VERSION, DRAFT_PROMPT_VERSION)
+                or request.prompt_version not in (PROMPT_VERSION, DRAFT_PROMPT_VERSION, DEVELOPMENT_PROMPT_VERSION)
                 or not isinstance(request.request_id, UUID) or not isinstance(request.session_id, UUID)
                 or not isinstance(request.project_id, str) or not PROJECT_ID.fullmatch(request.project_id)
                 or type(request.timeout_seconds) not in (int, float)
@@ -273,6 +274,24 @@ class ModelBoundary:
 
 class MockProvider:
     def invoke(self, request: Request, stop: Event) -> ProviderReply:
+        if request.prompt_version == DEVELOPMENT_PROMPT_VERSION:
+            try:
+                source = strict_object(request.input_text)["files"]["app.js"]
+                spec = strict_object(request.input_text)["spec"]
+                criteria = spec["acceptanceCriteria"]
+                response = {
+                    "version": DEVELOPMENT_PROMPT_VERSION,
+                    "patches": [{
+                        "plan": "Return the current template source as a deterministic fixture patch.",
+                        "specRef": {"type": "acceptanceCriteria", "id": criteria[0]["id"]},
+                        "path": "app.js", "expectedSha256": source["sha256"],
+                        "replacement": source["content"] + "\n/* deterministic mock repair */\n",
+                        "expectedChecks": ["resource_integrity"],
+                    }],
+                }
+                return ProviderReply(dumps(response, ensure_ascii=False), Usage(24, 12))
+            except (KeyError, IndexError, TypeError, ValueError):
+                return ProviderReply(None, Usage(0, 0), "MODEL_INVALID_OUTPUT")
         if request.prompt_version == DRAFT_PROMPT_VERSION:
             input_value = strict_object(request.input_text)
             draft = mock_draft(input_value["userMessage"])

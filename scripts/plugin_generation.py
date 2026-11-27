@@ -23,6 +23,9 @@ from plugin_package import PackageError, build_package, validate_package, valida
 from execution_isolation import SandboxConfig, run_isolated
 from spec_workflow import SpecError, validate_spec
 from task_runtime import DEFAULT_STORE, FILE_BYTES, TaskError, TaskStore, digest, encoded
+from model_boundary import Config, MAX_PROJECT_BUDGET, MODELS, MockProvider
+from openai_model import OpenAIProvider
+from relay_model import RelayProvider
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -407,13 +410,19 @@ def main() -> int:
     run_parser.add_argument("task_id")
     run_parser.add_argument("--qemu", type=Path, required=True)
     run_parser.add_argument("--image", type=Path, required=True)
+    run_parser.add_argument("--provider", choices=sorted(MODELS), default="mock")
     commands.add_parser("export").add_argument("task_id")
     args = parser.parse_args()
     try:
         store = TaskStore(args.store)
         if args.command == "run":
+            from plugin_repair import RepairCoordinator
+
             isolation = SandboxConfig.load(args.qemu.resolve(), args.image.resolve())
-            result = GenerationPipeline(store, isolation, scratch=store.root / "isolation-runs").run(args.task_id)
+            pipeline = GenerationPipeline(store, isolation, scratch=store.root / "isolation-runs")
+            providers = {"mock": MockProvider, "openai": OpenAIProvider, "kakou": RelayProvider}
+            config = Config(args.provider, MODELS[args.provider], MAX_PROJECT_BUDGET)
+            result = RepairCoordinator(store, config, providers[args.provider](), pipeline).run(args.task_id)
         else:
             result = {"ok": True, "taskId": args.task_id, "path": str(store.export_build(args.task_id)), "deliverable": False}
         print(json.dumps(result, ensure_ascii=False, indent=2))
