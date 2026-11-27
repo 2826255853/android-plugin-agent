@@ -8,16 +8,19 @@ from __future__ import annotations
 
 import argparse
 import copy
+import io
 import html
 import json
 import re
 import sqlite3
 import sys
+import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 from plugin_package import PackageError, build_package, validate_package, validate_source
+from execution_isolation import SandboxConfig, run_isolated
 from spec_workflow import SpecError, validate_spec
 from task_runtime import DEFAULT_STORE, FILE_BYTES, TaskError, TaskStore, digest, encoded
 
@@ -169,15 +172,122 @@ def run_static_tests(files: dict[str, bytes], spec: dict[str, Any]) -> list[str]
     return list(STATIC_CHECKS)
 
 
+def refresh_resource_hashes(files: dict[str, bytes], spec: dict[str, Any]) -> dict[str, bytes]:
+    """Update declared resource digests after an accepted C.3 source revision."""
+    try:
+        manifest = json.loads(files["manifest.json"].decode("utf-8"))
+        template_manifest = json.loads(generate_files(spec)["manifest.json"].decode("utf-8"))
+        if not isinstance(manifest, dict) or not isinstance(template_manifest, dict):
+            raise ValueError
+        resources = manifest.get("files")
+        template_resources = template_manifest.get("files")
+        if not isinstance(resources, list) or not isinstance(template_resources, list):
+            raise ValueError
+        protected = {key: value for key, value in manifest.items() if key != "files"}
+        expected = {key: value for key, value in template_manifest.items() if key != "files"}
+        if protected != expected:
+            raise ValueError
+        paths = [item["path"] for item in resources
+                 if isinstance(item, dict) and isinstance(item.get("path"), str)]
+        if len(paths) != len(resources) or set(paths) != {item["path"] for item in template_resources}:
+            raise ValueError
+        refreshed = dict(files)
+        manifest["files"] = [{"path": path, "sha256": digest(refreshed[path])} for path in sorted(paths)]
+        refreshed["manifest.json"] = encoded(manifest) + b"\n"
+        return refreshed
+    except (KeyError, UnicodeError, ValueError, TypeError):
+        raise GenerationError("MANIFEST_INVALID", "manifest.json", "manifest_contract") from None
+
+
 class GenerationPipeline:
-    def __init__(self, store: TaskStore) -> None:
+    def __init__(self, store: TaskStore, isolation: SandboxConfig | None = None,
+                 scratch: Path | None = None) -> None:
         self.store = store
+        self.isolation = isolation
+        self.scratch = scratch
 
     @staticmethod
     def _unwrap(result: dict[str, Any]) -> dict[str, Any]:
         if not result["ok"]:
             raise GenerationError(result["code"], check="task_guard")
         return result
+
+    def _verify_isolated(self, snapshot: dict[str, bytes], package: bytes, spec: dict[str, Any]) -> dict[str, Any]:
+        if self.isolation is None:
+            raise GenerationError("ISOLATION_UNAVAILABLE", check="isolation_config")
+        if self.scratch is not None:
+            self.scratch.mkdir(parents=True, exist_ok=True)
+
+        build_files = {**snapshot, "build.sh": b"#!/bin/sh\nset -eu\nnode --check /input/app.js\n"}
+        build_result = run_isolated(self.isolation, "build", build_files, scratch=self.scratch)
+        results = {"build": build_result}
+        if build_result.get("code") != "OK":
+            results["test"] = {"code": "NOT_RUN"}
+            results["preview"] = {"code": "NOT_RUN"}
+            return results
+
+        test_script = b"""#!/bin/sh
+set -eu
+node --check /input/app.js
+python3 -c 'from pathlib import Path; assert Path("/input/index.html").is_file(); assert Path("/input/app.css").is_file()'
+"""
+        test_result = run_isolated(self.isolation, "test", {**snapshot, "test.sh": test_script}, scratch=self.scratch)
+        results["test"] = test_result
+        if test_result.get("code") != "OK":
+            results["preview"] = {"code": "NOT_RUN"}
+            return results
+
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            preview_files = {name: archive.read(name) for name in archive.namelist() if name != "manifest.json"}
+        template_id = _template_id(spec)
+        primary_id, primary_value = (("title", "C5 interaction note") if template_id == "quick-notes"
+                                     else ("name", "C5 interaction contact"))
+        script_tag = b'<script src="app.js"></script>'
+        if preview_files.get("index.html", b"").count(script_tag) != 1:
+            raise GenerationError("PREVIEW_ENTRY_INVALID", "index.html", "interactive_preview")
+        preview_files["index.html"] = preview_files["index.html"].replace(
+            script_tag, b'<script src="c5-harness.js"></script>' + script_tag)
+        preview_files["c5-harness.js"] = f"""\
+"use strict";
+const saved = [];
+globalThis.PluginHostBridge = {{
+  onmessage: null,
+  postMessage(raw) {{
+    const request = JSON.parse(raw);
+    let result;
+    if (request.capability === "data.write") {{
+      saved.push({{ data: request.params.record }});
+      result = {{ ok: true, result: {{ record: saved[saved.length - 1] }} }};
+    }} else {{
+      result = {{ ok: true, result: {{ records: saved.slice(), nextCursor: null }} }};
+    }}
+    this.onmessage({{ data: JSON.stringify({{ id: request.id, ...result }}) }});
+  }}
+}};
+document.addEventListener("DOMContentLoaded", () => setTimeout(() => {{
+  const output = document.createElement("output");
+  output.id = "c5-result";
+  output.textContent = "FAIL";
+  document.body.append(output);
+  const list = document.querySelector("#{'notes' if template_id == 'quick-notes' else 'contacts'}");
+  const status = document.querySelector("#status");
+  const observer = new MutationObserver(() => {{
+    if (saved.length === 1 && list.textContent.includes({json.dumps(primary_value)})
+        && status.textContent.includes({json.dumps('笔记已保存' if template_id == 'quick-notes' else '已显示 1 位联系人')})) {{
+      output.textContent = "PASS";
+      observer.disconnect();
+    }}
+  }});
+  observer.observe(document.body, {{ childList: true, subtree: true, characterData: true }});
+  document.querySelector("#{'new-note' if template_id == 'quick-notes' else 'new-contact'}").click();
+  document.querySelector("#{primary_id}").value = {json.dumps(primary_value)};
+  {('document.querySelector("#body").value = "C5 interaction body";' if template_id == 'quick-notes' else 'document.querySelector("#phone").value = "5550100"; document.querySelector("#email").value = "c5@example.invalid";')}
+  document.querySelector("#{'note-form' if template_id == 'quick-notes' else 'contact-form'}").requestSubmit();
+}}, 50));
+""".encode("utf-8")
+        preview_result = run_isolated(self.isolation, "preview", preview_files, scratch=self.scratch)
+        results["preview"] = preview_result
+        return results
 
     def run(self, task_id: str) -> dict[str, Any]:
         stage = "generating"
@@ -191,16 +301,22 @@ class GenerationPipeline:
             claimed = True
             spec = self._unwrap(self.store.tool(task_id, "read_spec", {}))["result"]["spec"]
             report["templateVersion"] = TEMPLATES[_template_id(spec)][1]
-            files = generate_files(spec)
-            # All generated writes use the same quotas, revision history and
-            # cancellation boundary as Agent file tools. No arbitrary file I/O.
-            for name, content in sorted(files.items()):
-                read = self.store.tool(task_id, "read_file", {"path": name})
-                if not read["ok"] and read.get("code") != "FILE_NOT_FOUND":
-                    self._unwrap(read)
-                previous = read["result"]["sha256"] if read["ok"] else None
-                self._unwrap(self.store.tool(task_id, "apply_patch", {
-                    "path": name, "expectedSha256": previous, "content": content.decode("utf-8")}))
+            has_c3_revision = any(event["code"] == "PATCH_REVISION_COMMITTED"
+                                  for event in self.store.inspect(task_id)["events"])
+            with self.store._transaction() as db:
+                task = self.store._task(db, task_id)
+                error = self.store._guard(db, task)
+                if error:
+                    raise GenerationError(error, check="task_guard")
+            if not has_c3_revision:
+                files = generate_files(spec)
+                for name, content in sorted(files.items()):
+                    read = self.store.tool(task_id, "read_file", {"path": name})
+                    if not read["ok"] and read.get("code") != "FILE_NOT_FOUND":
+                        self._unwrap(read)
+                    previous = read["result"]["sha256"] if read["ok"] else None
+                    self._unwrap(self.store.tool(task_id, "apply_patch", {
+                        "path": name, "expectedSha256": previous, "content": content.decode("utf-8")}))
             self._unwrap(self.store.transition(task_id, "validating"))
             stage = "manifest"
             # Build from the actual bounded workspace snapshot, including any
@@ -212,14 +328,48 @@ class GenerationPipeline:
                     raise GenerationError(error, check="task_guard")
                 names = sorted(self.store._inventory(task))
             snapshot = {name: self._unwrap(self.store.tool(task_id, "read_file", {"path": name}))["result"]["content"].encode("utf-8") for name in names}
+            if has_c3_revision:
+                snapshot = refresh_resource_hashes(snapshot, spec)
+                manifest_content = snapshot["manifest.json"].decode("utf-8")
+                manifest_state = self._unwrap(self.store.tool(task_id, "read_file", {"path": "manifest.json"}))["result"]
+                if digest(manifest_state["content"].encode("utf-8")) != digest(snapshot["manifest.json"]):
+                    self._unwrap(self.store.tool(task_id, "apply_patch", {
+                        "path": "manifest.json", "expectedSha256": manifest_state["sha256"],
+                        "content": manifest_content}))
             report["sourceSha256"] = digest(encoded({name: digest(raw) for name, raw in sorted(snapshot.items())}))
             report["files"] = {name: digest(raw) for name, raw in sorted(snapshot.items())}
             validate_source(snapshot, "org.generated." + spec["projectId"])
             stage = "building"
             package = build_package(snapshot)
             validate_package(package, "org.generated." + spec["projectId"])
+            report["packaging"] = {"ok": True, "sourceSha256": report["sourceSha256"],
+                                   "packageSha256": digest(package), "sizeBytes": len(package),
+                                   "deterministic": build_package(snapshot) == package,
+                                   "roundTrip": "passed"}
             stage = "testing"
-            report["checks"] = run_static_tests(snapshot, spec)
+            report["staticChecks"] = run_static_tests(snapshot, spec)
+            report["checks"] = report["staticChecks"]
+            if self.isolation is not None:
+                stage = "building"
+                report["isolatedChecks"] = self._verify_isolated(snapshot, package, spec)
+                preview_code = report["isolatedChecks"].get("preview", {}).get("code")
+                report["executedGeneratedCode"] = preview_code in {
+                    "OK", "ISOLATION_WORKLOAD_FAILED", "ISOLATION_MEMORY_LIMIT",
+                    "ISOLATION_PROCESS_LIMIT", "ISOLATION_CPU_LIMIT", "ISOLATION_DISK_LIMIT"}
+                failed_check = next((name for name, result in report["isolatedChecks"].items()
+                                     if result.get("code") == "NOT_RUN"
+                                     or result.get("code") != "OK"
+                                     or (name == "preview" and '<output id="c5-result">PASS</output>'
+                                         not in result.get("output", ""))), None)
+                if failed_check:
+                    result = report["isolatedChecks"][failed_check]
+                    code = result.get("code")
+                    if code == "OK" or code == "NOT_RUN":
+                        code = "INTERACTION_TEST_FAILED"
+                    stage = "building" if failed_check == "build" else "testing"
+                    check = {"build": "isolated_build", "test": "isolated_test",
+                             "preview": "interactive_preview"}[failed_check]
+                    raise GenerationError(code, check=check)
             report.update(ok=True, stage="complete", status="built", artifact={
                 "sha256": digest(package), "sizeBytes": len(package),
                 "path": f"artifacts/{task_id}.zip"})
@@ -253,13 +403,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("run").add_argument("task_id")
+    run_parser = commands.add_parser("run")
+    run_parser.add_argument("task_id")
+    run_parser.add_argument("--qemu", type=Path, required=True)
+    run_parser.add_argument("--image", type=Path, required=True)
     commands.add_parser("export").add_argument("task_id")
     args = parser.parse_args()
     try:
         store = TaskStore(args.store)
-        result = GenerationPipeline(store).run(args.task_id) if args.command == "run" else {
-            "ok": True, "taskId": args.task_id, "path": str(store.export_build(args.task_id)), "deliverable": False}
+        if args.command == "run":
+            isolation = SandboxConfig.load(args.qemu.resolve(), args.image.resolve())
+            result = GenerationPipeline(store, isolation, scratch=store.root / "isolation-runs").run(args.task_id)
+        else:
+            result = {"ok": True, "taskId": args.task_id, "path": str(store.export_build(args.task_id)), "deliverable": False}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["ok"] else 2
     except (TaskError, ValueError, OSError, sqlite3.Error):
