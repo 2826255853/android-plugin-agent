@@ -1,0 +1,1062 @@
+{
+  "scope": {
+    "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deviceId": "test-android",
+    "credentialId": "00000000-0000-4000-8000-000000000001",
+    "projectId": "quick-notes"
+  },
+  "now": "2026-11-28T12:00:00Z",
+  "samples": {
+    "receipt": {
+      "deliveryVersion": 1,
+      "type": "delivery.receipt",
+      "deliveryId": "00000000-0000-4000-8000-000000000002",
+      "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "deviceId": "test-android",
+      "credentialId": "00000000-0000-4000-8000-000000000001",
+      "projectId": "quick-notes",
+      "taskId": "task-dddddddddddddddddddddddddddddddd",
+      "buildId": 2147483648,
+      "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "specVersion": 1,
+      "specSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "pluginId": "org.generated.quick-notes",
+      "pluginName": "虚构便签 📒",
+      "pluginVersion": "1.0.0",
+      "hostApi": {
+        "min": "1.0.0",
+        "max": "1.0.0"
+      },
+      "checks": {
+        "static": true,
+        "packaging": true,
+        "isolatedBuild": true,
+        "isolatedTest": true,
+        "interactivePreview": true
+      },
+      "manifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "packageFile": "org.generated.quick-notes-1.0.0.zip",
+      "sizeBytes": 400000,
+      "offeredAt": "2026-11-28T09:00:00Z",
+      "expiresAt": "2026-11-29T09:00:00Z"
+    },
+    "publish": {
+      "deliveryVersion": 1,
+      "type": "delivery.publish",
+      "requestId": "00000000-0000-4000-8000-000000000003",
+      "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "deviceId": "test-android",
+      "credentialId": "00000000-0000-4000-8000-000000000001",
+      "projectId": "quick-notes",
+      "taskId": "task-dddddddddddddddddddddddddddddddd",
+      "buildId": 2147483648,
+      "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "published": {
+      "deliveryVersion": 1,
+      "type": "delivery.published",
+      "requestId": "00000000-0000-4000-8000-000000000003",
+      "receipt": {
+        "deliveryVersion": 1,
+        "type": "delivery.receipt",
+        "deliveryId": "00000000-0000-4000-8000-000000000002",
+        "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "deviceId": "test-android",
+        "credentialId": "00000000-0000-4000-8000-000000000001",
+        "projectId": "quick-notes",
+        "taskId": "task-dddddddddddddddddddddddddddddddd",
+        "buildId": 2147483648,
+        "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "specVersion": 1,
+        "specSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "pluginId": "org.generated.quick-notes",
+        "pluginName": "虚构便签 📒",
+        "pluginVersion": "1.0.0",
+        "hostApi": {
+          "min": "1.0.0",
+          "max": "1.0.0"
+        },
+        "checks": {
+          "static": true,
+          "packaging": true,
+          "isolatedBuild": true,
+          "isolatedTest": true,
+          "interactivePreview": true
+        },
+        "manifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "packageFile": "org.generated.quick-notes-1.0.0.zip",
+        "sizeBytes": 400000,
+        "offeredAt": "2026-11-28T09:00:00Z",
+        "expiresAt": "2026-11-29T09:00:00Z"
+      }
+    },
+    "lookup": {
+      "deliveryVersion": 1,
+      "type": "delivery.lookup",
+      "requestId": "00000000-0000-4000-8000-000000000004",
+      "projectId": "quick-notes",
+      "deliveryId": "00000000-0000-4000-8000-000000000002"
+    },
+    "found": {
+      "deliveryVersion": 1,
+      "type": "delivery.found",
+      "requestId": "00000000-0000-4000-8000-000000000004",
+      "receipt": {
+        "deliveryVersion": 1,
+        "type": "delivery.receipt",
+        "deliveryId": "00000000-0000-4000-8000-000000000002",
+        "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "deviceId": "test-android",
+        "credentialId": "00000000-0000-4000-8000-000000000001",
+        "projectId": "quick-notes",
+        "taskId": "task-dddddddddddddddddddddddddddddddd",
+        "buildId": 2147483648,
+        "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "specVersion": 1,
+        "specSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "pluginId": "org.generated.quick-notes",
+        "pluginName": "虚构便签 📒",
+        "pluginVersion": "1.0.0",
+        "hostApi": {
+          "min": "1.0.0",
+          "max": "1.0.0"
+        },
+        "checks": {
+          "static": true,
+          "packaging": true,
+          "isolatedBuild": true,
+          "isolatedTest": true,
+          "interactivePreview": true
+        },
+        "manifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "packageFile": "org.generated.quick-notes-1.0.0.zip",
+        "sizeBytes": 400000,
+        "offeredAt": "2026-11-28T09:00:00Z",
+        "expiresAt": "2026-11-29T09:00:00Z"
+      }
+    },
+    "query": {
+      "deliveryVersion": 1,
+      "type": "delivery.query",
+      "requestId": "00000000-0000-4000-8000-000000000004",
+      "projectId": "quick-notes",
+      "after": "",
+      "limit": 2
+    },
+    "page": {
+      "deliveryVersion": 1,
+      "type": "delivery.page",
+      "requestId": "00000000-0000-4000-8000-000000000004",
+      "projectId": "quick-notes",
+      "after": "",
+      "hasMore": false,
+      "receipts": [
+        {
+          "deliveryVersion": 1,
+          "type": "delivery.receipt",
+          "deliveryId": "00000000-0000-4000-8000-000000000002",
+          "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "deviceId": "test-android",
+          "credentialId": "00000000-0000-4000-8000-000000000001",
+          "projectId": "quick-notes",
+          "taskId": "task-dddddddddddddddddddddddddddddddd",
+          "buildId": 2147483648,
+          "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "specVersion": 1,
+          "specSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "pluginId": "org.generated.quick-notes",
+          "pluginName": "虚构便签 📒",
+          "pluginVersion": "1.0.0",
+          "hostApi": {
+            "min": "1.0.0",
+            "max": "1.0.0"
+          },
+          "checks": {
+            "static": true,
+            "packaging": true,
+            "isolatedBuild": true,
+            "isolatedTest": true,
+            "interactivePreview": true
+          },
+          "manifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "packageFile": "org.generated.quick-notes-1.0.0.zip",
+          "sizeBytes": 400000,
+          "offeredAt": "2026-11-28T09:00:00Z",
+          "expiresAt": "2026-11-29T09:00:00Z"
+        }
+      ]
+    },
+    "segment": {
+      "deliveryVersion": 1,
+      "type": "delivery.download",
+      "requestId": "00000000-0000-4000-8000-000000000005",
+      "projectId": "quick-notes",
+      "deliveryId": "00000000-0000-4000-8000-000000000002",
+      "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "offset": 262144,
+      "length": 137856
+    },
+    "revoke": {
+      "deliveryVersion": 1,
+      "type": "delivery.revoke",
+      "requestId": "00000000-0000-4000-8000-000000000006",
+      "deliveryId": "00000000-0000-4000-8000-000000000002"
+    },
+    "revoked": {
+      "deliveryVersion": 1,
+      "type": "delivery.revoked",
+      "requestId": "00000000-0000-4000-8000-000000000006",
+      "deliveryId": "00000000-0000-4000-8000-000000000002"
+    },
+    "error": {
+      "deliveryVersion": 1,
+      "type": "delivery.error",
+      "requestId": "00000000-0000-4000-8000-000000000005",
+      "code": "DELIVERY_EXPIRED"
+    }
+  },
+  "parseCases": [
+    {"name": "valid-lookup", "sample": "lookup", "expected": "OK"},
+    {"name": "valid-found", "sample": "found", "expected": "OK"},
+    {
+      "name": "valid-receipt",
+      "sample": "receipt",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-publish",
+      "sample": "publish",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-published",
+      "sample": "published",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-query",
+      "sample": "query",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-page",
+      "sample": "page",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-segment",
+      "sample": "segment",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-revoke",
+      "sample": "revoke",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-revoked",
+      "sample": "revoked",
+      "expected": "OK"
+    },
+    {
+      "name": "valid-error",
+      "sample": "error",
+      "expected": "OK"
+    },
+    {
+      "name": "missing-spec-sha",
+      "sample": "receipt",
+      "remove": "specSha256",
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "negative-size",
+      "sample": "receipt",
+      "set": {
+        "sizeBytes": -1
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "zero-size",
+      "sample": "receipt",
+      "set": {
+        "sizeBytes": 0
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "above-max-size",
+      "sample": "receipt",
+      "set": {
+        "sizeBytes": 10485761
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "boolean-size",
+      "sample": "receipt",
+      "set": {
+        "sizeBytes": true
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "string-size",
+      "sample": "receipt",
+      "set": {
+        "sizeBytes": "400000"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "bad-package-hash",
+      "sample": "receipt",
+      "set": {
+        "packageSha256": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "short-manifest-hash",
+      "sample": "receipt",
+      "set": {
+        "manifestSha256": "ab"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "unsafe-package-name",
+      "sample": "receipt",
+      "set": {
+        "packageFile": "../org.generated.quick-notes-1.0.0.zip"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "wrong-package-name",
+      "sample": "receipt",
+      "set": {
+        "packageFile": "other-1.0.0.zip"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "unknown-field",
+      "sample": "receipt",
+      "set": {
+        "status": "imported"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "unsupported-version",
+      "sample": "receipt",
+      "set": {
+        "deliveryVersion": 2
+      },
+      "expected": "UNSUPPORTED_SCHEMA_VERSION"
+    },
+    {
+      "name": "invalid-time",
+      "sample": "receipt",
+      "set": {
+        "expiresAt": "2026-11-31T09:00:00Z"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "zero-lifetime",
+      "sample": "receipt",
+      "set": {
+        "expiresAt": "2026-11-28T09:00:00Z"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "over-max-lifetime",
+      "sample": "receipt",
+      "set": {
+        "expiresAt": "2026-11-29T09:00:00.000001Z"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "unordered-host-api",
+      "sample": "receipt",
+      "set": {
+        "hostApi": {
+          "min": "1.10.0",
+          "max": "1.2.0"
+        }
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "cross-major-host-api",
+      "sample": "receipt",
+      "set": {
+        "hostApi": {
+          "min": "1.0.0",
+          "max": "2.0.0"
+        }
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "failed-check",
+      "sample": "receipt",
+      "set": {
+        "checks": {
+          "static": true,
+          "packaging": true,
+          "isolatedBuild": true,
+          "isolatedTest": false,
+          "interactivePreview": true
+        }
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "name-limit-in-utf16",
+      "sample": "receipt",
+      "set": {
+        "pluginName": "📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒📒"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "size-at-cap",
+      "sample": "receipt",
+      "set": {
+        "sizeBytes": 10485760
+      },
+      "expected": "OK"
+    },
+    {
+      "name": "duplicate-json-key",
+      "sample": "query",
+      "raw": "{\"deliveryVersion\":1,\"type\":\"delivery.query\",\"type\":\"delivery.query\"}",
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "float-size",
+      "sample": "receipt",
+      "replace": [
+        "\"sizeBytes\":400000",
+        "\"sizeBytes\":400000.0"
+      ],
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "negative-segment-offset",
+      "sample": "segment",
+      "set": {
+        "offset": -1
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "zero-segment",
+      "sample": "segment",
+      "set": {
+        "length": 0
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "oversized-segment",
+      "sample": "segment",
+      "set": {
+        "length": 262145
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "segment-past-zip-cap",
+      "sample": "segment",
+      "set": {
+        "offset": 10485759,
+        "length": 2
+      },
+      "expected": "DELIVERY_RANGE_INVALID"
+    },
+    {
+      "name": "empty-page-with-more",
+      "sample": "page",
+      "set": {
+        "hasMore": true,
+        "receipts": []
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "duplicate-page-entry",
+      "sample": "page",
+      "set": {
+        "receipts": [
+          {
+            "deliveryVersion": 1,
+            "type": "delivery.receipt",
+            "deliveryId": "00000000-0000-4000-8000-000000000002",
+            "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "deviceId": "test-android",
+            "credentialId": "00000000-0000-4000-8000-000000000001",
+            "projectId": "quick-notes",
+            "taskId": "task-dddddddddddddddddddddddddddddddd",
+            "buildId": 2147483648,
+            "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "specVersion": 1,
+            "specSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "pluginId": "org.generated.quick-notes",
+            "pluginName": "虚构便签 📒",
+            "pluginVersion": "1.0.0",
+            "hostApi": {
+              "min": "1.0.0",
+              "max": "1.0.0"
+            },
+            "checks": {
+              "static": true,
+              "packaging": true,
+              "isolatedBuild": true,
+              "isolatedTest": true,
+              "interactivePreview": true
+            },
+            "manifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "packageFile": "org.generated.quick-notes-1.0.0.zip",
+            "sizeBytes": 400000,
+            "offeredAt": "2026-11-28T09:00:00Z",
+            "expiresAt": "2026-11-29T09:00:00Z"
+          },
+          {
+            "deliveryVersion": 1,
+            "type": "delivery.receipt",
+            "deliveryId": "00000000-0000-4000-8000-000000000002",
+            "sourceFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "deviceId": "test-android",
+            "credentialId": "00000000-0000-4000-8000-000000000001",
+            "projectId": "quick-notes",
+            "taskId": "task-dddddddddddddddddddddddddddddddd",
+            "buildId": 2147483648,
+            "packageSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "specVersion": 1,
+            "specSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "pluginId": "org.generated.quick-notes",
+            "pluginName": "虚构便签 📒",
+            "pluginVersion": "1.0.0",
+            "hostApi": {
+              "min": "1.0.0",
+              "max": "1.0.0"
+            },
+            "checks": {
+              "static": true,
+              "packaging": true,
+              "isolatedBuild": true,
+              "isolatedTest": true,
+              "interactivePreview": true
+            },
+            "manifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "packageFile": "org.generated.quick-notes-1.0.0.zip",
+            "sizeBytes": 400000,
+            "offeredAt": "2026-11-28T09:00:00Z",
+            "expiresAt": "2026-11-29T09:00:00Z"
+          }
+        ]
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "page-entry-before-cursor",
+      "sample": "page",
+      "set": {
+        "after": "00000000-0000-4000-8000-000000000009"
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "unknown-error-code",
+      "sample": "error",
+      "set": {
+        "code": "UNRECOGNIZED"
+      },
+      "expected": "INVALID_REQUEST"
+    }
+  ],
+  "contexts": [
+    {"name": "published-binds-request", "sample": "published", "expected": "OK"},
+    {"name": "published-with-wrong-request", "sample": "published", "set": {"requestId": "00000000-0000-4000-8000-000000000010"}, "expected": "DELIVERY_BINDING_MISMATCH"},
+    {"name": "lookup-binds-delivery", "sample": "found", "expected": "OK"},
+    {"name": "lookup-with-wrong-delivery", "sample": "found", "set": {"receipt": {"deliveryVersion":1,"type":"delivery.receipt","deliveryId":"00000000-0000-4000-8000-000000000011","sourceFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","deviceId":"test-android","credentialId":"00000000-0000-4000-8000-000000000001","projectId":"quick-notes","taskId":"task-dddddddddddddddddddddddddddddddd","buildId":2147483648,"packageSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","specVersion":1,"specSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","pluginId":"org.generated.quick-notes","pluginName":"虚构便签 📒","pluginVersion":"1.0.0","hostApi":{"min":"1.0.0","max":"1.0.0"},"checks":{"static":true,"packaging":true,"isolatedBuild":true,"isolatedTest":true,"interactivePreview":true},"manifestSha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","packageFile":"org.generated.quick-notes-1.0.0.zip","sizeBytes":400000,"offeredAt":"2026-11-28T09:00:00Z","expiresAt":"2026-11-29T09:00:00Z"}}, "expected": "DELIVERY_BINDING_MISMATCH"},
+    {
+      "name": "active-receipt",
+      "sample": "receipt",
+      "expected": "OK"
+    },
+    {
+      "name": "wrong-target-device",
+      "sample": "receipt",
+      "scope": {
+        "deviceId": "other-android"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    },
+    {
+      "name": "superseded-pairing",
+      "sample": "receipt",
+      "scope": {
+        "credentialId": "00000000-0000-4000-8000-000000000021"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    },
+    {
+      "name": "wrong-source-fingerprint",
+      "sample": "receipt",
+      "scope": {
+        "sourceFingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    },
+    {
+      "name": "wrong-project",
+      "sample": "receipt",
+      "scope": {
+        "projectId": "other-project"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    },
+    {
+      "name": "last-microsecond",
+      "sample": "receipt",
+      "now": "2026-11-29T08:59:59.999999Z",
+      "expected": "OK"
+    },
+    {
+      "name": "expiry-boundary",
+      "sample": "receipt",
+      "now": "2026-11-29T09:00:00Z",
+      "expected": "DELIVERY_EXPIRED"
+    },
+    {
+      "name": "expired-receipt",
+      "sample": "receipt",
+      "now": "2026-11-30T09:00:00Z",
+      "expected": "DELIVERY_EXPIRED"
+    },
+    {
+      "name": "valid-bound-page",
+      "sample": "page",
+      "expected": "OK"
+    },
+    {
+      "name": "page-with-wrong-request",
+      "sample": "page",
+      "set": {
+        "requestId": "00000000-0000-4000-8000-000000000010"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    },
+    {
+      "name": "page-with-wrong-pairing",
+      "sample": "page",
+      "scope": {
+        "deviceId": "other-android"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    },
+    {
+      "name": "short-page-with-more",
+      "sample": "page",
+      "set": {
+        "hasMore": true
+      },
+      "expected": "INVALID_REQUEST"
+    },
+    {
+      "name": "exact-final-segment",
+      "sample": "segment",
+      "expected": "OK"
+    },
+    {
+      "name": "repeated-read-of-same-segment",
+      "sample": "segment",
+      "expected": "OK"
+    },
+    {
+      "name": "range-past-bound-package",
+      "sample": "segment",
+      "set": {
+        "length": 137857
+      },
+      "expected": "DELIVERY_RANGE_INVALID"
+    },
+    {
+      "name": "segment-with-wrong-digest",
+      "sample": "segment",
+      "set": {
+        "packageSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    },
+    {
+      "name": "segment-with-wrong-id",
+      "sample": "segment",
+      "set": {
+        "deliveryId": "00000000-0000-4000-8000-000000000011"
+      },
+      "expected": "DELIVERY_BINDING_MISMATCH"
+    }
+  ],
+  "states": [
+    {
+      "name": "publish-built",
+      "current": "built",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000100",
+        "actor": "desktop",
+        "action": "publish"
+      },
+      "expected": "offered"
+    },
+    {
+      "name": "duplicate-publish",
+      "current": "offered",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000101",
+        "actor": "desktop",
+        "action": "publish"
+      },
+      "prior": {
+        "eventId": "00000000-0000-4000-8000-000000000101",
+        "actor": "desktop",
+        "action": "publish"
+      },
+      "expected": "offered"
+    },
+    {
+      "name": "observe-offer",
+      "current": "unseen",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000102",
+        "actor": "android",
+        "action": "observe"
+      },
+      "expected": "offered"
+    },
+    {
+      "name": "duplicate-observation-keeps-verification",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000103",
+        "actor": "android",
+        "action": "observe"
+      },
+      "prior": {
+        "eventId": "00000000-0000-4000-8000-000000000103",
+        "actor": "android",
+        "action": "observe"
+      },
+      "expected": "verified"
+    },
+    {
+      "name": "desktop-cannot-observe",
+      "current": "unseen",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000104",
+        "actor": "desktop",
+        "action": "observe"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "record-disconnect",
+      "current": "offered",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000105",
+        "actor": "android",
+        "action": "disconnect"
+      },
+      "expected": "interrupted"
+    },
+    {
+      "name": "resume-after-requery",
+      "current": "interrupted",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000106",
+        "actor": "android",
+        "action": "resume"
+      },
+      "expected": "offered"
+    },
+    {
+      "name": "all-bytes-durable",
+      "current": "offered",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000107",
+        "actor": "android",
+        "action": "receive_all"
+      },
+      "expected": "transferred"
+    },
+    {
+      "name": "repeat-download-completion",
+      "current": "transferred",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000108",
+        "actor": "android",
+        "action": "receive_all"
+      },
+      "prior": {
+        "eventId": "00000000-0000-4000-8000-000000000108",
+        "actor": "android",
+        "action": "receive_all"
+      },
+      "expected": "transferred"
+    },
+    {
+      "name": "download-cannot-install",
+      "current": "transferred",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000109",
+        "actor": "android",
+        "action": "commit_import"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "offered-cannot-verify",
+      "current": "offered",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000110",
+        "actor": "android",
+        "action": "verify"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "whole-package-verified",
+      "current": "transferred",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000111",
+        "actor": "android",
+        "action": "verify"
+      },
+      "expected": "verified"
+    },
+    {
+      "name": "importer-committed",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000112",
+        "actor": "android",
+        "action": "commit_import"
+      },
+      "expected": "imported"
+    },
+    {
+      "name": "desktop-cannot-record-local-import",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000113",
+        "actor": "desktop",
+        "action": "commit_import"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "duplicate-import",
+      "current": "imported",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000114",
+        "actor": "android",
+        "action": "commit_import"
+      },
+      "prior": {
+        "eventId": "00000000-0000-4000-8000-000000000114",
+        "actor": "android",
+        "action": "commit_import"
+      },
+      "expected": "imported"
+    },
+    {
+      "name": "cancel-before-confirmation",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000115",
+        "actor": "android",
+        "action": "cancel"
+      },
+      "expected": "cancelled"
+    },
+    {
+      "name": "cancel-during-transfer",
+      "current": "interrupted",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000116",
+        "actor": "android",
+        "action": "cancel"
+      },
+      "expected": "cancelled"
+    },
+    {
+      "name": "cancelled-cannot-install",
+      "current": "cancelled",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000117",
+        "actor": "android",
+        "action": "commit_import"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "user-rejects",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000118",
+        "actor": "android",
+        "action": "reject",
+        "reason": "user_declined"
+      },
+      "expected": "rejected"
+    },
+    {
+      "name": "reject-corruption",
+      "current": "transferred",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000119",
+        "actor": "android",
+        "action": "reject",
+        "reason": "package_hash_mismatch"
+      },
+      "expected": "rejected"
+    },
+    {
+      "name": "definitive-import-failure",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000120",
+        "actor": "android",
+        "action": "reject",
+        "reason": "import_failed"
+      },
+      "expected": "rejected"
+    },
+    {
+      "name": "rejection-requires-reason",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000121",
+        "actor": "android",
+        "action": "reject"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "rejection-reason-requires-evidence-stage",
+      "current": "offered",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000122",
+        "actor": "android",
+        "action": "reject",
+        "reason": "user_declined"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "conflicting-event-payload",
+      "current": "rejected",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000123",
+        "actor": "android",
+        "action": "reject",
+        "reason": "import_failed"
+      },
+      "prior": {
+        "eventId": "00000000-0000-4000-8000-000000000123",
+        "actor": "android",
+        "action": "reject",
+        "reason": "user_declined"
+      },
+      "expected": "EVENT_ID_CONFLICT"
+    },
+    {
+      "name": "device-observes-expiry",
+      "current": "interrupted",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000124",
+        "actor": "android",
+        "action": "expire"
+      },
+      "expected": "expired"
+    },
+    {
+      "name": "desktop-expires-offer",
+      "current": "offered",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000125",
+        "actor": "desktop",
+        "action": "expire"
+      },
+      "expected": "expired"
+    },
+    {
+      "name": "desktop-revokes-offer",
+      "current": "offered",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000126",
+        "actor": "desktop",
+        "action": "revoke"
+      },
+      "expected": "revoked"
+    },
+    {
+      "name": "desktop-cannot-update-download-state",
+      "current": "transferred",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000127",
+        "actor": "desktop",
+        "action": "revoke"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "device-observes-revocation",
+      "current": "verified",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000128",
+        "actor": "android",
+        "action": "revoke"
+      },
+      "expected": "revoked"
+    },
+    {
+      "name": "revocation-stops-resume",
+      "current": "revoked",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000129",
+        "actor": "android",
+        "action": "resume"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "expiry-stops-new-install",
+      "current": "expired",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000130",
+        "actor": "android",
+        "action": "commit_import"
+      },
+      "expected": "INVALID_STATE"
+    },
+    {
+      "name": "revocation-does-not-undo-install",
+      "current": "imported",
+      "event": {
+        "eventId": "00000000-0000-4000-8000-000000000131",
+        "actor": "android",
+        "action": "revoke"
+      },
+      "expected": "INVALID_STATE"
+    }
+  ]
+}

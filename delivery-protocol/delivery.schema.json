@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate delivery v1",
+  "description": "Wire shape. The Python and Kotlin validators also enforce strict JSON, UTC time, cross-field bindings, state transitions and request context.",
+  "oneOf": [{"$ref":"#/$defs/receipt"},{"$ref":"#/$defs/publish"},{"$ref":"#/$defs/published"},{"$ref":"#/$defs/query"},{"$ref":"#/$defs/page"},{"$ref":"#/$defs/lookup"},{"$ref":"#/$defs/found"},{"$ref":"#/$defs/download"},{"$ref":"#/$defs/revoke"},{"$ref":"#/$defs/revoked"},{"$ref":"#/$defs/error"}],
+  "$defs": {
+    "uuid": {"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "slug": {"type":"string","pattern":"^[a-z][a-z0-9-]{2,63}$"},
+    "sha256": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+    "stableVersion": {"type":"string","pattern":"^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$","maxLength":32},
+    "utc": {"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$","format":"date-time"},
+    "cursor": {"anyOf":[{"const":""},{"$ref":"#/$defs/uuid"}]},
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","deliveryId","sourceFingerprint","deviceId","credentialId","projectId","taskId","buildId","packageSha256","specVersion","specSha256","pluginId","pluginName","pluginVersion","hostApi","checks","manifestSha256","packageFile","sizeBytes","offeredAt","expiresAt"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.receipt"},
+        "deliveryId": {"$ref":"#/$defs/uuid"},
+        "sourceFingerprint": {"$ref":"#/$defs/sha256"},
+        "deviceId": {"$ref":"#/$defs/slug"},
+        "credentialId": {"$ref":"#/$defs/uuid"},
+        "projectId": {"$ref":"#/$defs/slug"},
+        "taskId": {"type":"string","pattern":"^task-[0-9a-f]{32}$"},
+        "buildId": {"type":"integer","minimum":1,"maximum":9007199254740991},
+        "packageSha256": {"$ref":"#/$defs/sha256"},
+        "specVersion": {"type":"integer","minimum":1,"maximum":2147483647},
+        "specSha256": {"$ref":"#/$defs/sha256"},
+        "pluginId": {"type":"string","pattern":"^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$","maxLength":128},
+        "pluginName": {"type":"string","pattern":"^[^\\u0000-\\u001f\\u007f]+$","minLength":1,"maxLength":64},
+        "pluginVersion": {"$ref":"#/$defs/stableVersion"},
+        "hostApi": {"type":"object","additionalProperties":false,"required":["min","max"],"properties":{"min":{"$ref":"#/$defs/stableVersion"},"max":{"$ref":"#/$defs/stableVersion"}}},
+        "checks": {"type":"object","additionalProperties":false,"required":["static","packaging","isolatedBuild","isolatedTest","interactivePreview"],"properties":{"static":{"const":true},"packaging":{"const":true},"isolatedBuild":{"const":true},"isolatedTest":{"const":true},"interactivePreview":{"const":true}}},
+        "manifestSha256": {"$ref":"#/$defs/sha256"},
+        "packageFile": {"type":"string","pattern":"^[a-z][a-z0-9.-]*\\.zip$","maxLength":165},
+        "sizeBytes": {"type":"integer","minimum":1,"maximum":10485760},
+        "offeredAt": {"$ref":"#/$defs/utc"},
+        "expiresAt": {"$ref":"#/$defs/utc"}
+      }
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","sourceFingerprint","deviceId","credentialId","projectId","taskId","buildId","packageSha256"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.publish"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "sourceFingerprint": {"$ref":"#/$defs/sha256"},
+        "deviceId": {"$ref":"#/$defs/slug"},
+        "credentialId": {"$ref":"#/$defs/uuid"},
+        "projectId": {"$ref":"#/$defs/slug"},
+        "taskId": {"type":"string","pattern":"^task-[0-9a-f]{32}$"},
+        "buildId": {"type":"integer","minimum":1,"maximum":9007199254740991},
+        "packageSha256": {"$ref":"#/$defs/sha256"}
+      }
+    },
+    "published": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","receipt"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.published"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "receipt": {"$ref":"#/$defs/receipt"}
+      }
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","projectId","after","limit"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.query"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "projectId": {"$ref":"#/$defs/slug"},
+        "after": {"$ref":"#/$defs/cursor"},
+        "limit": {"type":"integer","minimum":1,"maximum":20}
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","projectId","after","hasMore","receipts"],
+      "allOf": [{"if":{"properties":{"hasMore":{"const":true}}},"then":{"properties":{"receipts":{"minItems":1}}}}],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.page"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "projectId": {"$ref":"#/$defs/slug"},
+        "after": {"$ref":"#/$defs/cursor"},
+        "hasMore": {"type":"boolean"},
+        "receipts": {"type":"array","maxItems":20,"items":{"$ref":"#/$defs/receipt"}}
+      }
+    },
+    "lookup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","projectId","deliveryId"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.lookup"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "projectId": {"$ref":"#/$defs/slug"},
+        "deliveryId": {"$ref":"#/$defs/uuid"}
+      }
+    },
+    "found": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","receipt"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.found"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "receipt": {"$ref":"#/$defs/receipt"}
+      }
+    },
+    "download": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","projectId","deliveryId","packageSha256","offset","length"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.download"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "projectId": {"$ref":"#/$defs/slug"},
+        "deliveryId": {"$ref":"#/$defs/uuid"},
+        "packageSha256": {"$ref":"#/$defs/sha256"},
+        "offset": {"type":"integer","minimum":0,"maximum":10485759},
+        "length": {"type":"integer","minimum":1,"maximum":262144}
+      }
+    },
+    "revoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","deliveryId"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.revoke"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "deliveryId": {"$ref":"#/$defs/uuid"}
+      }
+    },
+    "revoked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","deliveryId"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.revoked"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "deliveryId": {"$ref":"#/$defs/uuid"}
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryVersion","type","requestId","code"],
+      "properties": {
+        "deliveryVersion": {"const":1},
+        "type": {"const":"delivery.error"},
+        "requestId": {"$ref":"#/$defs/uuid"},
+        "code": {"enum":["INVALID_REQUEST","UNSUPPORTED_SCHEMA_VERSION","PAYLOAD_TOO_LARGE","AUTH_REQUIRED","DEVICE_REVOKED","DELIVERY_NOT_FOUND","DELIVERY_EXPIRED","DELIVERY_REVOKED","DELIVERY_BINDING_MISMATCH","DELIVERY_RANGE_INVALID","REQUEST_ID_CONFLICT","BUILD_NOT_AVAILABLE","RATE_LIMITED","INTERNAL_ERROR"]}
+      }
+    }
+  }
+}

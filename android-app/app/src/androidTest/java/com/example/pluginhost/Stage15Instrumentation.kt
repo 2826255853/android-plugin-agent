@@ -44,6 +44,7 @@ class Stage15Instrumentation : Instrumentation() {
             test("read-page-byte-at-and-over") { verifyPageBytes() }
             test("message-protocol-fixtures") { verifyMessageProtocolFixtures() }
             test("dialogue-protocol-fixtures") { verifyDialogueProtocolFixtures(assetText("fixtures/stage-b1.json")) }
+            test("candidate-delivery-protocol-fixtures") { verifyDeliveryProtocolFixtures(assetText("stage-d1.json")) }
             test("desktop-conversation-outbox") { verifyDesktopOutbox() }
             test("desktop-dialogue-cursor-and-upgrade") { verifyDesktopDialogueCursor() }
             test("desktop-spec-decision-outbox-upgrade") { verifySpecDecisionOutbox() }

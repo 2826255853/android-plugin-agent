@@ -39,9 +39,10 @@ android {
     providers.gradleProperty("stage15Assets").orNull?.let { directory ->
         sourceSets.getByName("androidTest").assets.srcDir(directory)
     }
-    // Stage A.1 Android protocol checks consume the canonical repository fixtures.
+    // Android protocol checks consume the canonical repository fixtures.
     sourceSets.getByName("androidTest").assets.srcDir("../../message-protocol")
     sourceSets.getByName("androidTest").assets.srcDir("../../dialogue-protocol")
+    sourceSets.getByName("androidTest").assets.srcDir("../../delivery-protocol/fixtures")
 }
 
 dependencies {
